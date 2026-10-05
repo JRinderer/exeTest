@@ -44,6 +44,8 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 
 ## Reading the result
 
+See **[RESULTS.md](RESULTS.md)** for what every finding means, how to triage, and what to do next. In short:
+
 1. **Coverage** (top of the report): which evidence sources the bundle contained (`ns.conf`, `ns.log`,
    `httpaccess`, shell history, `httpd.conf`, cron, web folders, ...) and how many days each log covers.
    A source that is missing, or a log with under 7 days, limits what a "clean" result means.
