@@ -15,6 +15,9 @@ summary and a two-page investigator summary, with the same "how to tell if it wo
 Add `-fixdate "YYYY-MM-DD HH:MM"` to split attack lines before and after the fix. See `README.md` for the options.
 This guide remains the full reference for every finding.
 
+**Where do I look on the appliance, and what do I look for?** See [INVESTIGATE.md](INVESTIGATE.md), a field guide that
+maps each finding to the paths, commands and signs to check.
+
 ## 1. The 60-second summary
 
 | You see | It means | Do this |

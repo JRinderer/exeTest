@@ -53,6 +53,8 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 
 ## Reading the result
 
+For what to do on the appliance after a finding (paths, commands, what to look for), see **[INVESTIGATE.md](INVESTIGATE.md)**.
+
 See **[RESULTS.md](RESULTS.md)** for what every finding means, how to triage, and what to do next. In short:
 
 1. **Coverage** (top of the report): which evidence sources the bundle contained (`ns.conf`, `ns.log`,
