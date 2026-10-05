@@ -31,7 +31,7 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 | Flag | Meaning |
 |---|---|
 | `-out FILE` | also save the report (attacker text is defanged: `;|&$<>` become `_`, `http:` becomes `hxxp:`). Refused if the path is inside the scanned bundle, is a symlink or special file, or is the file being scanned |
-| `-json FILE` | also save findings and coverage as JSON |
+| `-json FILE` | also save findings, coverage, run statistics and per-line timestamps as JSON (input for `summarize`) |
 | `-min LEVEL` | lowest severity shown: `info`, `lead`, `check`, `targeted`, `suspect`, `compromise` (default `check`) |
 | `-inventory` | print structure only (folders, extensions, classification, first-line *shape* of unknown files); no contents |
 | `-redact=false` | with `-inventory`: show real paths (default masks IPs and long numbers) |
@@ -61,6 +61,21 @@ See **[RESULTS.md](RESULTS.md)** for what every finding means, how to triage, an
 | INFO | context: build vs fixed builds, SAML configured |
 
 Exit status: `0` nothing above LEAD, `1` CHECK/TARGETED, `2` SUSPECT/COMPROMISE, `3` error.
+
+## Summaries for management and investigators
+
+```sh
+nsioc -max-lines 20 -json report.json /path/to/bundle        # scan; keep more sample lines for the summary
+nsioc summarize report.json -out summary.md                  # executive (1 page) + investigator (2 pages), Markdown
+nsioc summarize report.json -fixdate "2026-10-01 12:00"      # also split attack lines before/after the fix
+nsioc summarize -audience exec report.json                   # exec | investigator | both
+```
+
+Local and deterministic: no network, no AI service. The **executive summary** gives the bottom line, key facts, decisions
+and how far to trust the result. The **investigator summary** gives coverage, a timeline, findings by attack stage with
+*how to tell if it worked* and next steps, cross-finding correlations, and a prioritised checklist. The wording is
+conservative: it says "indicated" or "not established", and never that a system is clean. Reports from older versions
+(JSON schema 1) must be re-scanned.
 
 ## What it searches
 

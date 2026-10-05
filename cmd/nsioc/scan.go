@@ -22,6 +22,7 @@ const maxDepth = 6 // tar -> file -> gz -> ... nesting limit
 type hit struct {
 	N    int
 	Text string
+	Time string // "2026-09-29T00:10:12", or "--09-29T00:10:12" when the log has no year; empty if none
 }
 
 // agg collects the hits of one rule in one file.
@@ -171,7 +172,7 @@ func (s *Scanner) add(local map[string]*agg, key string, sev Severity, id, desc,
 	}
 	a.Total++
 	if len(a.Lines) < s.maxPer {
-		a.Lines = append(a.Lines, hit{n, text})
+		a.Lines = append(a.Lines, hit{n, text, hitTime(n, text)})
 	}
 }
 

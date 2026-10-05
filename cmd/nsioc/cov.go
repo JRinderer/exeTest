@@ -310,3 +310,38 @@ func anyPath(r *regexp.Regexp, lp string, vps []string) bool {
 	}
 	return false
 }
+
+var nsDate = re(`([0-9]{2})/([0-9]{2})/([0-9]{4}):([0-9]{2}):([0-9]{2}):([0-9]{2})`)
+
+// hitTime returns the timestamp of a matched line for the JSON report. ns.log lines start with a syslog
+// time (no year) but also carry MM/DD/YYYY:HH:MM:SS, which is used when present. Config and listing
+// hits (n == 0, or no timestamp) return "".
+func hitTime(n int, text string) string {
+	if n == 0 {
+		return ""
+	}
+	b := []byte(text)
+	t, hasYear, ok := parseTS(b)
+	if !ok {
+		return ""
+	}
+	if !hasYear {
+		head := b
+		if len(head) > 120 {
+			head = head[:120]
+		}
+		if m := nsDate.FindSubmatch(head); m != nil {
+			mo, _ := dig(m[1])
+			d, _ := dig(m[2])
+			y, _ := dig(m[3])
+			h, _ := dig(m[4])
+			mi, _ := dig(m[5])
+			sc, _ := dig(m[6])
+			if mo >= 1 && mo <= 12 {
+				return time.Date(y, time.Month(mo), d, h, mi, sc, 0, time.UTC).Format("2006-01-02T15:04:05")
+			}
+		}
+		return "--" + t.Format("01-02T15:04:05")
+	}
+	return t.Format("2006-01-02T15:04:05")
+}

@@ -27,6 +27,9 @@ import (
 const version = "1.0"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "summarize" {
+		os.Exit(runSummarize(os.Args[2:]))
+	}
 	var (
 		dir      = flag.String("dir", "", "directory (or single file / archive) to search; may also be given as the first argument")
 		out      = flag.String("out", "", "also write the report to this file (attacker text defanged)")
@@ -186,7 +189,7 @@ func main() {
 		}
 	}
 	if jsonPath != "" {
-		if err := writeJSON(jsonPath, findings, sc.cov); err != nil {
+		if err := writeJSON(jsonPath, findings, sc, root); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
@@ -333,24 +336,50 @@ type jsonFinding struct {
 
 type jsonLn struct {
 	Line int    `json:"line,omitempty"`
+	Time string `json:"time,omitempty"`
 	Text string `json:"text"`
 }
 
-func writeJSON(path string, f []*agg, cov []covStat) error {
+// reportDoc is the JSON report. schema 2 adds identification, run statistics and per-line timestamps;
+// "nsioc summarize" reads it.
+type reportDoc struct {
+	Schema    int           `json:"schema"`
+	Tool      string        `json:"tool"`
+	Version   string        `json:"version"`
+	Bundle    string        `json:"bundle"`
+	Generated string        `json:"generated"`
+	Stats     reportStats   `json:"stats"`
+	Coverage  []jsonCov     `json:"coverage"`
+	Findings  []jsonFinding `json:"findings"`
+}
+
+type reportStats struct {
+	Files    int64 `json:"files"`
+	Archives int64 `json:"archives"`
+	Lines    int64 `json:"lines"`
+	Bytes    int64 `json:"bytes"`
+	MaxLines int   `json:"max_lines_per_rule_per_file"`
+}
+
+const reportSchema = 2
+
+func writeJSON(path string, f []*agg, sc *Scanner, bundle string) error {
 	out := make([]jsonFinding, 0, len(f))
 	for _, a := range f {
 		j := jsonFinding{Severity: a.Sev.String(), Rule: a.ID, Desc: a.Desc, Source: a.Ref, File: a.File, Matches: a.Total}
 		for _, h := range a.Lines {
-			j.Lines = append(j.Lines, jsonLn{h.N, defangText(h.Text)})
+			j.Lines = append(j.Lines, jsonLn{h.N, h.Time, defangText(h.Text)})
 		}
 		out = append(out, j)
 	}
+	doc := reportDoc{
+		Schema: reportSchema, Tool: "nsioc", Version: version, Bundle: bundle,
+		Generated: time.Now().UTC().Format(time.RFC3339),
+		Stats:     reportStats{sc.files, sc.archives, sc.lines, sc.bytes, sc.maxPer},
+		Coverage:  coverJSON(sc.cov), Findings: out,
+	}
 	var buf bytes.Buffer
-	err := writeIndented(&buf, struct {
-		Coverage []jsonCov     `json:"coverage"`
-		Findings []jsonFinding `json:"findings"`
-	}{coverJSON(cov), out})
-	if err != nil {
+	if err := writeIndented(&buf, doc); err != nil {
 		return err
 	}
 	return writeReport(path, buf.Bytes())
@@ -398,19 +427,23 @@ func printRules(s *Scanner) {
 }
 
 type jsonCov struct {
-	Source  string `json:"source"`
-	Found   bool   `json:"found"`
-	Files   int    `json:"files"`
-	Lines   int64  `json:"lines"`
-	Span    string `json:"time_span,omitempty"`
-	Enables string `json:"enables"`
+	Source  string  `json:"source"`
+	Key     string  `json:"key"`
+	Loc     bool    `json:"location,omitempty"`
+	Found   bool    `json:"found"`
+	Files   int     `json:"files"`
+	Lines   int64   `json:"lines"`
+	Span    string  `json:"time_span,omitempty"`
+	Days    float64 `json:"days,omitempty"`
+	Enables string  `json:"enables"`
 }
 
 func coverJSON(cov []covStat) []jsonCov {
 	out := make([]jsonCov, 0, len(covSources))
 	for i, src := range covSources {
 		c := &cov[i]
-		out = append(out, jsonCov{src.Name, c.Files > 0, c.Files, c.Lines, fmtSpan(c), src.Enables})
+		days, _ := spanDays(c)
+		out = append(out, jsonCov{src.Name, src.Key, src.Loc, c.Files > 0, c.Files, c.Lines, fmtSpan(c), days, src.Enables})
 	}
 	return out
 }
@@ -644,7 +677,7 @@ func checkOutput(flagName, p, root, other string) (string, error) {
 	if st, err := os.Stat(realRoot); err == nil && !st.IsDir() {
 		realRoot = filepath.Dir(realRoot) // single-file scan: the evidence file's folder is not off limits, the file itself is
 		if target == realRootFile(root) {
-			return "", fmt.Errorf("%s %q is the file being scanned", flagName, p)
+			return "", fmt.Errorf("%s %q is the input file", flagName, p)
 		}
 	} else if within(realRoot, target) {
 		return "", fmt.Errorf("%s %q is inside the scanned directory; write the report elsewhere so the evidence is not changed", flagName, p)
