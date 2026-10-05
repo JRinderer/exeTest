@@ -101,6 +101,7 @@ Threat types: **known attacker** (published exploitation IPs), **password-spray 
 
 | Option | What it does |
 |---|---|
+| `-dir FOLDER` | the folder that holds the bundles. Optional: you can instead put the folder last on the command line (`ipxref.exe C:\bundles`) |
 | `-out FILE` | save the text report |
 | `-csv FILE` | save the shared-IP list as CSV |
 | `-threats FILE` | save the threat IPs per bundle (`.csv` = spreadsheet, otherwise text) |
