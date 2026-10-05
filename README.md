@@ -11,11 +11,20 @@ compromise (IOCs) of **CVE-2026-88771, CVE-2026-88772** (CTX697096) and **CVE-20
   [ThomasPoppelgaard/netscaler-ctx697096-checker](https://github.com/ThomasPoppelgaard/netscaler-ctx697096-checker)
   (script v1.12, MIT). See `THIRD_PARTY_NOTICES.md`.
 
+This repository holds two programs:
+
+| Program | Purpose |
+|---|---|
+| `nsioc` | search **one** bundle for the CVE-2026-88771/88772/88779 indicators (this page) |
+| `ipxref` | compare **many** bundles and list the IP addresses that appear in more than one (see [ipxref](#ipxref-compare-many-bundles)) |
+
 ## Build
 
 ```sh
 go build -o nsioc ./cmd/nsioc                                      # this machine
 GOOS=windows GOARCH=amd64 go build -o nsioc.exe ./cmd/nsioc        # Windows (a build is included: nsioc.exe)
+go build -o ipxref ./cmd/ipxref                                    # the cross-bundle comparison
+GOOS=windows GOARCH=amd64 go build -o ipxref.exe ./cmd/ipxref
 ```
 
 ## Use
@@ -94,6 +103,10 @@ conservative: it says "indicated" or "not established", and never that a system 
   as the appliance kept them. Attackers can also clean up.
 - Not ported from the original script: before/after-fix tagging, comparison of `ns.conf` against older saved copies,
   and checks that need a live system.
+- **Compressed files:** gzip, bzip2 and tar are recognised by their first bytes, not their name, so rotated logs such as
+  `ns.log.0.gz`, `ns.log.1.gz` or even an extensionless gzip `ns.log.0` are unpacked and searched. **xz, zstd, `.Z`, zip,
+  7-zip and lz4** cannot be read with Go's standard library; such files are listed under a `!!! ... COULD NOT BE READ`
+  warning (in the report, the JSON and both summaries) and are **not searched**. Decompress them on a copy and re-run.
 - Tested on synthetic bundles only; the file layout of a real bundle may need `-map` tweaks.
 - The Windows build is cross-compiled and untested on Windows.
 
@@ -102,3 +115,56 @@ conservative: it says "indicated" or "not established", and never that a system 
 `perl cmd/nsioc/gen_iocdata.pl ctx697096_check.sh > cmd/nsioc/iocdata.go` regenerates the IP/domain/hash tables
 from a newer checker script (the line numbers in `gen_iocdata.pl` refer to v1.12). Detection patterns in
 `cmd/nsioc/rules.go` are ported by hand.
+
+## ipxref: compare many bundles
+
+**Step-by-step instructions: [cmd/ipxref/README.md](cmd/ipxref/README.md).**
+
+`ipxref` reads a folder that holds all your bundles and reports the IP addresses that show up in more than one of
+them, and in which bundles. Standard library only, read-only, same path-safety rules as `nsioc`.
+
+```sh
+ipxref /path/to/folder-of-bundles                       # report on screen
+ipxref -out ips.txt -csv ips.csv /path/to/folder        # also a text report and an Excel-friendly CSV
+ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
+```
+
+- **What is a bundle:** each immediate subfolder (an extracted bundle) or archive file (`.tar.gz`, `.tgz`, `.gz`,
+  `.bz2`) in the folder you give. At least two are needed.
+- **The report** starts with a summary and a table of the bundles, then a **LOG HISTORY** table, then lists the IPs
+  grouped by how many bundles they appear in, starting with **IN ALL N BUNDLES**. Each IP shows its total hits, the
+  bundles it was found in (with hits and dates per bundle) and the typical files it appears in, so you can judge the
+  context.
+- **How far back the logs go:** LOG HISTORY gives each bundle's oldest and newest log entry and how many days that
+  covers (read across all rotated logs, `.gz` included), the period that *every* bundle covers, and warnings for
+  bundles with under 7 days of logs, no dated lines, or logs that do not overlap in time. Each IP also shows
+  **First seen / Last seen**, taken from the timestamps of the log lines that contain it. An IP found only in a
+  config or command output has no date. Log lines without a year (plain syslog) are placed in the year of the
+  bundle's newest dated line, and marked "(year inferred)".
+- **Rotated and compressed logs** (`ns.log.0`, `ns.log.1.gz`, ...) are read; gzip/bzip2 are detected by content, so a
+  missing `.gz` extension does not matter. xz, zstd, `.Z`, zip, 7-zip and lz4 files cannot be read and are listed in a
+  warning at the top of the report (their IPs are missing until you decompress them).
+- **Threat IPs:** a **KNOWN THREAT IPs** section lists, per bundle, every address that is on the published attacker
+  lists `nsioc` uses (known attackers, password-spray ranges and, as weak "leads", GreyNoise-tagged scanners), even if it
+  is in only one bundle. `-threats FILE` exports the complete list: `.csv` gives one row per IP per bundle (open it in
+  Excel and filter by bundle), any other name gives readable text by bundle and by IP. `-no-scanners` drops the weak
+  scanner leads. The IP tables are generated from the same source as `nsioc`
+  (`perl cmd/nsioc/gen_iocdata.pl ctx697096_check.sh ips > cmd/ipxref/iocdata.go`).
+- **Noise is filtered by default:** private, loopback, link-local and reserved addresses, netmasks (`255.255.255.0`),
+  version numbers (`Build 14.1.73.37`) and binary files. `-include-private` and `-include-versions` turn the
+  filters off.
+- **`-ignore FILE`** drops addresses you know are normal (your DNS, NTP, VIPs, monitoring). One IP or CIDR range per
+  line, `#` for comments.
+
+| Flag | Meaning |
+|---|---|
+| `-min-bundles N` | list IPs found in at least N bundles (default 2) |
+| `-max-ips N` | most IPs printed in the text report (default 300; the CSV always has all) |
+| `-full` | always list every bundle for each IP, however many |
+| `-out FILE`, `-csv FILE` | save the report / a CSV with one row per IP (includes first_seen, last_seen, days_between and dates per bundle). Refused if inside the searched folder |
+| `-threats FILE` | export threat IPs found in each bundle (`.csv` or text) |
+| `-no-scanners` | leave weak scanner-lead IPs out of the threat report |
+| `-workers N`, `-v` | parallel files, progress |
+
+An address in many bundles can be an attacker or scanner hitting every appliance, but it can equally be shared
+infrastructure. It is a lead, not a verdict. IPv4 only.

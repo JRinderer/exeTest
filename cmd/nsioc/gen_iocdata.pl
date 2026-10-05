@@ -1,5 +1,6 @@
 use strict; use warnings;
-my $sh = shift; open(my $f,'<',$sh) or die; my @L = <$f>; close $f;
+# usage: perl gen_iocdata.pl ctx697096_check.sh [ips]   (mode 'ips' = only the IP tables, used by cmd/ipxref)
+my $sh = shift; my $mode = shift // ''; open(my $f,'<',$sh) or die; my @L = <$f>; close $f;
 sub ln { $L[$_[0]-1] }
 sub ips { my @r = ln($_[0]) =~ /\b(\d{1,3}(?:\.\d{1,3}){3})\b/g; @r }
 sub hx { my @r = ln($_[0]) =~ /\b([0-9a-f]{64})\b/g; @r }
@@ -28,6 +29,7 @@ print "}\n\n";
 # opportunistic scanners
 my $o = ln(1022); my @op; while ($o =~ /(\d{1,3}(?:\\\.\d{1,3}){3})/g) { my $x=$1; $x =~ s/\\//g; push @op,$x }
 print "var scannerIPs = []string{\n"; my %s2; for my $x (@op) { next if $s2{$x}++ || $seen{$x}; print "\t\"$x\",\n"; } print "}\n\n";
+exit 0 if $mode eq 'ips';
 # domains
 my ($dl) = ln(1014) =~ /GN_DOM='([^']+)'/; my @dom = map { s/\\//gr } split /\|/, $dl;
 print "var attackerDomains = []string{\n"; print "\t\"$_\",\n" for @dom; print "}\n\n";
