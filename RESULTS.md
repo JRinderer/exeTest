@@ -8,6 +8,13 @@ The descriptions of the attacks and indicators come from the research collected 
 the vendor and researcher reports it credits. They are not independently verified here, and the indicators are
 unofficial community guidance, not Citrix's own IoC list.
 
+## Want it condensed?
+
+`nsioc summarize report.json` turns a JSON report (`nsioc -json report.json <bundle>`) into a one-page executive
+summary and a two-page investigator summary, with the same "how to tell if it worked" guidance for each finding.
+Add `-fixdate "YYYY-MM-DD HH:MM"` to split attack lines before and after the fix. See `README.md` for the options.
+This guide remains the full reference for every finding.
+
 ## 1. The 60-second summary
 
 | You see | It means | Do this |
@@ -188,7 +195,8 @@ daily NetScaler check later executes. These findings look for those injected str
 
 ## 5. Triage: before or after the fix?
 
-The tool does **not** tag attack lines as before or after the patch. This matters a lot:
+The scan report does **not** tag attack lines as before or after the patch (`nsioc summarize -fixdate` can split
+the dated lines for you). This matters a lot:
 
 - An injection attempt **before** the fixed build was installed may have run (the injected command is reportedly
   picked up by a background job up to about 24 hours later).
