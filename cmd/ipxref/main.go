@@ -566,20 +566,22 @@ func loadIgnore(path string) ([]netip.Prefix, error) {
 
 func main() {
 	var (
-		dir     = flag.String("dir", "", "folder that contains the bundles (one subfolder or archive per bundle); may be the first argument")
-		out     = flag.String("out", "", "also write the report to this text file")
-		csvOut  = flag.String("csv", "", "also write one row per IP to this CSV file (opens in Excel)")
-		minB    = flag.Int("min-bundles", 2, "report IPs found in at least this many bundles")
-		maxIPs  = flag.Int("max-ips", 300, "most IPs listed in the text report (the CSV always has all)")
-		priv    = flag.Bool("include-private", false, "also count private, loopback and reserved addresses (excluded by default)")
-		vers    = flag.Bool("include-versions", false, "also count version-looking numbers such as 'Build 14.1.73.37' (excluded by default)")
-		ignore  = flag.String("ignore", "", "file of IPs / CIDR ranges to leave out (your DNS, NTP, VIPs, monitoring), one per line, # for comments")
-		full    = flag.Bool("full", false, "always list every bundle (with hit counts) for each IP")
-		threats = flag.String("threats", "", "write the threat IPs found in each bundle to this file: .csv = spreadsheet (one row per IP per bundle), anything else = readable text")
-		tOnly   = flag.Bool("threats-only", false, "show ONLY the threat IPs found in each bundle (no shared-IP list, no log history); -threats, -out and -no-scanners still work")
-		noScan  = flag.Bool("no-scanners", false, "leave opportunistic scanner IPs (weak 'lead' evidence) out of the threat report")
-		workers = flag.Int("workers", runtime.NumCPU(), "files read in parallel")
-		verbose = flag.Bool("v", false, "print progress")
+		dir      = flag.String("dir", "", "folder that contains the bundles (one subfolder or archive per bundle); may be the first argument")
+		out      = flag.String("out", "", "also write the full readable text report (every IP) to this file")
+		csvOut   = flag.String("csv", "", "write one row per IP to this CSV file (opens in Excel): threat flag, bundle names, hits per bundle, dates. If you give no output file at all, ipxref_ips.csv is written in the current folder")
+		minB     = flag.Int("min-bundles", 1, "list IPs found in at least this many bundles (1 = every IP, even if it is in only one bundle; 2 = only IPs shared between bundles)")
+		maxIPs   = flag.Int("max-ips", 300, "most IPs listed on SCREEN (0 = no limit). The -out file and the CSV always have every IP")
+		priv     = flag.Bool("include-private", false, "also count private, loopback and reserved addresses (excluded by default)")
+		vers     = flag.Bool("include-versions", false, "also count version-looking numbers such as 'Build 14.1.73.37' (excluded by default)")
+		ignore   = flag.String("ignore", "", "file of IPs / CIDR ranges to leave out (your DNS, NTP, VIPs, monitoring), one per line, # for comments")
+		full     = flag.Bool("full", false, "always list every bundle (with hit counts) for each IP")
+		threats  = flag.String("threats", "", "write the threat IPs found in each bundle to this file: .csv = spreadsheet (one row per IP per bundle), anything else = readable text")
+		printRep = flag.Bool("print", false, "also print the full text report on screen (by default only a short summary is shown)")
+		bundCSV  = flag.String("bundles-csv", "", "write one row per bundle (files, IP counts, threat IPs, oldest and newest log entry) to this CSV file")
+		tOnly    = flag.Bool("threats-only", false, "only the threat IPs: no list of other IPs. Writes ipxref_threats.csv unless you give -threats FILE (.csv or text)")
+		noScan   = flag.Bool("no-scanners", false, "leave opportunistic scanner IPs (weak 'lead' evidence) out of the threat report")
+		workers  = flag.Int("workers", runtime.NumCPU(), "files read in parallel")
+		verbose  = flag.Bool("v", false, "print progress")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ipxref %s - find IP addresses that appear in more than one Citrix technical support bundle\n\n", version)
@@ -594,8 +596,8 @@ func main() {
 		flag.Usage()
 		os.Exit(3)
 	}
-	if *minB < 2 {
-		*minB = 2
+	if *minB < 1 {
+		*minB = 1
 	}
 	abs, err := filepath.Abs(*dir)
 	if err != nil {
@@ -603,6 +605,13 @@ func main() {
 	}
 	if st, err := os.Stat(abs); err != nil || !st.IsDir() {
 		fatal(fmt.Errorf("%s is not a folder", *dir))
+	}
+	if *csvOut == "" && *out == "" && *threats == "" && *bundCSV == "" && !*printRep {
+		if *tOnly {
+			*threats = "ipxref_threats.csv"
+		} else {
+			*csvOut = "ipxref_ips.csv"
+		}
 	}
 	outPath, err := checkOutput("-out", *out, abs)
 	if err != nil {
@@ -613,6 +622,10 @@ func main() {
 		fatal(err)
 	}
 	threatsPath, err := checkOutput("-threats", *threats, abs, outPath, csvPath)
+	if err != nil {
+		fatal(err)
+	}
+	bundlesPath, err := checkOutput("-bundles-csv", *bundCSV, abs, outPath, csvPath, threatsPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -716,58 +729,64 @@ func main() {
 	wg.Wait()
 
 	rep := compare(bundles, ign, *minB, newThreatDB(!*noScan))
+	took := time.Since(start)
+
+	var written []string
+	write := func(path string, data []byte, what string) {
+		if path == "" {
+			return
+		}
+		if err := writeFile(path, data); err != nil {
+			fatal(err)
+		}
+		written = append(written, fmt.Sprintf("%s  (%s)", path, what))
+	}
+	threatData := func(textFallback string) []byte {
+		if strings.EqualFold(filepath.Ext(threatsPath), ".csv") {
+			d, err := renderThreatCSV(bundles, rep)
+			if err != nil {
+				fatal(err)
+			}
+			return d
+		}
+		return []byte(textFallback)
+	}
+
 	if *tOnly {
 		text := unreadWarning(bundles) + renderThreatText(abs, bundles, rep, !*noScan)
-		fmt.Print(text)
+		write(outPath, []byte(text), "threat IPs by bundle, text")
+		if threatsPath != "" {
+			write(threatsPath, threatData(text), "threat IPs, one row per IP per bundle")
+		}
+		if *printRep {
+			fmt.Print(text)
+		}
+	} else {
 		if outPath != "" {
-			if err := writeFile(outPath, []byte(text)); err != nil {
+			write(outPath, []byte(render(abs, bundles, rep, notBundles, sc.warnings, *minB, 0, *full, *priv, *vers, *ignore != "", threatsPath != "", took)), "full text report, every IP")
+		}
+		if csvPath != "" {
+			data, err := renderCSV(bundles, rep)
+			if err != nil {
 				fatal(err)
 			}
+			write(csvPath, data, "every IP, one row each, with threat flag")
 		}
 		if threatsPath != "" {
-			var data []byte
-			if strings.EqualFold(filepath.Ext(threatsPath), ".csv") {
-				if data, err = renderThreatCSV(bundles, rep); err != nil {
-					fatal(err)
-				}
-			} else {
-				data = []byte(text)
-			}
-			if err := writeFile(threatsPath, data); err != nil {
-				fatal(err)
-			}
+			write(threatsPath, threatData(renderThreatText(abs, bundles, rep, !*noScan)), "threat IPs, one row per IP per bundle")
 		}
-		return
-	}
-	text := render(abs, bundles, rep, notBundles, sc.warnings, *minB, *maxIPs, *full, *priv, *vers, *ignore != "", threatsPath != "", time.Since(start))
-	fmt.Print(text)
-	if outPath != "" {
-		if err := writeFile(outPath, []byte(text)); err != nil {
-			fatal(err)
+		if *printRep {
+			fmt.Print(render(abs, bundles, rep, notBundles, sc.warnings, *minB, *maxIPs, *full, *priv, *vers, *ignore != "", threatsPath != "", took))
 		}
 	}
-	if threatsPath != "" {
-		var data []byte
-		if strings.EqualFold(filepath.Ext(threatsPath), ".csv") {
-			if data, err = renderThreatCSV(bundles, rep); err != nil {
-				fatal(err)
-			}
-		} else {
-			data = []byte(renderThreatText(abs, bundles, rep, !*noScan))
-		}
-		if err := writeFile(threatsPath, data); err != nil {
-			fatal(err)
-		}
-	}
-	if csvPath != "" {
-		data, err := renderCSV(bundles, rep)
+	if bundlesPath != "" {
+		data, err := renderBundlesCSV(bundles, rep)
 		if err != nil {
 			fatal(err)
 		}
-		if err := writeFile(csvPath, data); err != nil {
-			fatal(err)
-		}
+		write(bundlesPath, data, "one row per bundle")
 	}
+	fmt.Print(consoleSummary(abs, bundles, rep, sc.warnings, took, written, *printRep))
 }
 
 func fatal(err error) {
@@ -809,6 +828,12 @@ type result struct {
 	AllDated        bool     // every bundle has dated log lines
 	NDated          int      // bundles that have dated log lines
 	Threats         []*ipRow // addresses on the published threat lists, in any number of bundles
+	NMulti          int      // IPs found in 2 or more bundles
+	NSingle         int      // IPs found in only one bundle
+	SinglePerBndl   []int    // IPs found only in this bundle, per bundle
+	NAll            int      // IPs found in every bundle
+	ThreatMulti     int      // threat IPs found in 2 or more bundles
+	ThreatAll       int      // threat IPs found in every bundle
 }
 
 // prepare fixes each bundle's reference date and resolves its log history.
@@ -860,7 +885,7 @@ func overlap(bundles []*bundle, r *result) {
 func compare(bundles []*bundle, ign []netip.Prefix, minB int, tdb *threatDB) *result {
 	prepare(bundles)
 	idx := map[uint32]*ipRow{}
-	r := &result{DistinctPerBndl: make([]int, len(bundles)), SharedPerBndl: make([]int, len(bundles))}
+	r := &result{DistinctPerBndl: make([]int, len(bundles)), SharedPerBndl: make([]int, len(bundles)), SinglePerBndl: make([]int, len(bundles))}
 	ignored := map[uint32]bool{}
 	for bi, b := range bundles {
 		for ip, st := range b.ips {
@@ -898,6 +923,21 @@ func compare(bundles []*bundle, ign []netip.Prefix, minB int, tdb *threatDB) *re
 	r.Ignored = len(ignored)
 	r.TotalDistinct = len(idx)
 	for _, row := range idx {
+		switch k := len(row.Seen); {
+		case k == len(bundles):
+			r.NAll++
+			fallthrough
+		case k >= 2:
+			r.NMulti++
+			for _, sn := range row.Seen {
+				r.SharedPerBndl[sn.B]++
+			}
+		default:
+			r.NSingle++
+			r.SinglePerBndl[row.Seen[0].B]++
+		}
+	}
+	for _, row := range idx {
 		cat, src := "", ""
 		if tdb != nil {
 			cat, src = tdb.lookup(row.IP)
@@ -906,11 +946,7 @@ func compare(bundles []*bundle, ign []netip.Prefix, minB int, tdb *threatDB) *re
 			continue
 		}
 		sort.Slice(row.Seen, func(i, j int) bool { return row.Seen[i].B < row.Seen[j].B })
-		if len(row.Seen) >= minB {
-			for _, s := range row.Seen {
-				r.SharedPerBndl[s.B]++
-			}
-		}
+
 		cnt := map[string]int{}
 		for _, s := range row.Seen {
 			for i := 0; i < int(s.S.NEx); i++ {
@@ -945,6 +981,12 @@ func compare(bundles []*bundle, ign []netip.Prefix, minB int, tdb *threatDB) *re
 		if cat != "" {
 			row.Threat, row.ThreatSrc = cat, src
 			r.Threats = append(r.Threats, row)
+			if len(row.Seen) >= 2 {
+				r.ThreatMulti++
+			}
+			if len(row.Seen) == len(bundles) {
+				r.ThreatAll++
+			}
 		}
 	}
 	sort.Slice(r.Threats, func(i, j int) bool {
@@ -965,6 +1007,12 @@ func compare(bundles []*bundle, ign []netip.Prefix, minB int, tdb *threatDB) *re
 		a, b := r.Rows[i], r.Rows[j]
 		if len(a.Seen) != len(b.Seen) {
 			return len(a.Seen) > len(b.Seen)
+		}
+		if len(a.Seen) == 1 && a.Seen[0].B != b.Seen[0].B {
+			return a.Seen[0].B < b.Seen[0].B
+		}
+		if len(a.Seen) == 1 && (a.Threat != "") != (b.Threat != "") {
+			return a.Threat != ""
 		}
 		if a.Hits != b.Hits {
 			return a.Hits > b.Hits
@@ -1007,13 +1055,6 @@ func wrap(prefix string, items []string, width int, indent string) string {
 func render(dir string, bundles []*bundle, r *result, notBundles, warns []string, minB, maxIPs int, full, priv, vers, ignoring, threatsExported bool, took time.Duration) string {
 	var b strings.Builder
 	n := len(bundles)
-	var inAll, shared int
-	for _, row := range r.Rows {
-		shared++
-		if len(row.Seen) == n {
-			inAll++
-		}
-	}
 	line := strings.Repeat("=", 78)
 	fmt.Fprintf(&b, "%s\nIP CROSS-REFERENCE: addresses found in more than one support bundle\n%s\n", line, line)
 	fmt.Fprintf(&b, "Folder searched : %s\n", dir)
@@ -1033,27 +1074,18 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 	b.WriteString(unreadWarning(bundles))
 
 	fmt.Fprintf(&b, "SUMMARY\n-------\n")
-	fmt.Fprintf(&b, "  %s distinct IP addresses were found across all bundles.\n", comma(int64(r.TotalDistinct)))
-	verb := "appear"
-	if shared == 1 {
-		verb = "appears"
+	fmt.Fprintf(&b, "  %s distinct IP addresses were found across all %d bundles:\n", comma(int64(r.TotalDistinct)), n)
+	fmt.Fprintf(&b, "    - %s %s in only ONE bundle\n", comma(int64(r.NSingle)), appear(r.NSingle))
+	fmt.Fprintf(&b, "    - %s %s in 2 or more bundles (shared), of which %s %s in ALL %d bundles\n", comma(int64(r.NMulti)), appear(r.NMulti), comma(int64(r.NAll)), isAre(r.NAll), n)
+	verb := "are"
+	if len(r.Threats) == 1 {
+		verb = "is"
 	}
-	fmt.Fprintf(&b, "  %s of them %s in %d or more bundles.\n", comma(int64(shared)), verb, minB)
-	verb = "appear"
-	if inAll == 1 {
-		verb = "appears"
+	fmt.Fprintf(&b, "  %d of them %s on the published threat lists (%d in more than one bundle, %d in ALL bundles). They are marked THREAT IP.\n", len(r.Threats), verb, r.ThreatMulti, r.ThreatAll)
+	if minB > 1 {
+		fmt.Fprintf(&b, "  This report lists only IPs found in at least %d bundles (-min-bundles).\n", minB)
 	}
-	fmt.Fprintf(&b, "  %s %s in ALL %d bundles.\n", comma(int64(inAll)), verb, n)
-	thr, thrAll := 0, 0
-	for _, row := range r.Rows {
-		if row.Threat != "" {
-			thr++
-			if len(row.Seen) == n {
-				thrAll++
-			}
-		}
-	}
-	fmt.Fprintf(&b, "  %d of the shared IPs %s on the published threat lists (%d of those in ALL bundles). They are marked THREAT IP below.\n\n", thr, map[bool]string{true: "is", false: "are"}[thr == 1], thrAll)
+	b.WriteString("\n")
 
 	fmt.Fprintf(&b, "BUNDLES COMPARED\n----------------\n")
 	nameW := 6
@@ -1078,9 +1110,29 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 	b.WriteString(renderThreats(bundles, r, threatsExported))
 
 	if len(r.Rows) == 0 {
-		fmt.Fprintf(&b, "No IP address appears in %d or more bundles with the current settings.\n", minB)
+		fmt.Fprintf(&b, "No IP address was found with the current settings (-min-bundles %d).\n", minB)
 	}
-	listed := 0
+	limit := maxIPs
+	if limit <= 0 {
+		limit = 1 << 30
+	}
+	type single struct{ ips, threats int }
+	singles := map[int]*single{}
+	for _, x := range r.Rows {
+		if len(x.Seen) == 1 {
+			sg := singles[x.Seen[0].B]
+			if sg == nil {
+				sg = &single{}
+				singles[x.Seen[0].B] = sg
+			}
+			sg.ips++
+			if x.Threat != "" {
+				sg.threats++
+			}
+		}
+	}
+	lastSingleB := -1
+	listed, omitted := 0, 0
 	lastGroup := -1
 	for _, row := range r.Rows {
 		k := len(row.Seen)
@@ -1103,12 +1155,39 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 					all = append(all[:40], fmt.Sprintf("...and %d more", n-40))
 				}
 				b.WriteString(wrap("  Bundles: ", all, 100, "           "))
+			} else if k == 1 {
+				fmt.Fprintf(&b, "%s\nIN ONLY ONE BUNDLE (%d IP%s), listed under the bundle each was found in\n%s\n", line, count, pl(count), line)
 			} else {
 				fmt.Fprintf(&b, "%s\nIN %d OF %d BUNDLES (%d IP%s)\n%s\n", line, k, n, count, pl(count), line)
 			}
 		}
-		if listed >= maxIPs {
-			break
+		if listed >= limit && row.Threat == "" { // the cap never hides a threat IP
+			omitted++
+			continue
+		}
+		if k == 1 { // one line per IP, grouped by bundle
+			sn := row.Seen[0]
+			if sn.B != lastSingleB {
+				lastSingleB = sn.B
+				sg := singles[sn.B]
+				fmt.Fprintf(&b, "\n  %s  (%s IP%s found only in this bundle; %d on threat lists)\n", bundles[sn.B].Name, comma(int64(sg.ips)), pl(sg.ips), sg.threats)
+				fmt.Fprintf(&b, "    %-16s  %8s  %-26s  %-12s  %-12s  %s\n", "IP address", "Hits", "Threat list", "First seen", "Last seen", "Found in")
+			}
+			threat := "no"
+			if row.Threat != "" {
+				threat = "YES: " + row.Threat
+			}
+			first, last := "-", "-"
+			if sn.R.OK {
+				first, last = sn.R.Lo.Format("2 Jan 2006"), sn.R.Hi.Format("2 Jan 2006")
+			}
+			var files []string
+			for i := 0; i < int(sn.S.NEx); i++ {
+				files = append(files, bundles[sn.B].names[sn.S.Ex[i]])
+			}
+			fmt.Fprintf(&b, "    %-16s  %8s  %-26s  %-12s  %-12s  %s\n", ipString(row.IP), comma(sn.S.Hits), threat, first, last, strings.Join(files, ", "))
+			listed++
+			continue
 		}
 		listed++
 		mark := ""
@@ -1168,8 +1247,8 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 			fmt.Fprintf(&b, "    Typical files: %s\n", strings.Join(row.Typical, ", "))
 		}
 	}
-	if len(r.Rows) > listed {
-		fmt.Fprintf(&b, "\n... %d more IPs not listed (-max-ips %d). Use -csv for the complete list.\n", len(r.Rows)-listed, maxIPs)
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n... %d more IPs not listed on screen (-max-ips %d; threat IPs are always listed). The -out file and the -csv file have every IP.\n", omitted, maxIPs)
 	}
 
 	b.WriteString("\nHOW TO READ THIS\n----------------\n")
@@ -1385,4 +1464,100 @@ func unreadWarning(bundles []*bundle) string {
 	}
 	b.WriteString("    Decompress them first (for example  xz -d  or  zstd -d  on a copy) and run again; results are incomplete until then.\n\n")
 	return b.String()
+}
+
+func appear(n int) string {
+	if n == 1 {
+		return "appears"
+	}
+	return "appear"
+}
+
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// consoleSummary is what ipxref prints by default: a few lines, not the full report.
+func consoleSummary(dir string, bundles []*bundle, r *result, warns []string, took time.Duration, written []string, alreadyPrinted bool) string {
+	var b strings.Builder
+	n := len(bundles)
+	fmt.Fprintf(&b, "ipxref %s: compared %d bundles in %s (%s)\n\n", version, n, dir, took.Round(time.Second))
+	nameW := 6
+	for _, bd := range bundles {
+		if len(bd.Name) > nameW {
+			nameW = len(bd.Name)
+		}
+	}
+	if nameW > 50 {
+		nameW = 50
+	}
+	bb := byBundle(bundles, r)
+	fmt.Fprintf(&b, "  %-*s  %8s  %-12s  %-12s  %10s  %10s\n", nameW, "Bundle", "Files", "Oldest log", "Newest log", "IPs found", "Threat IPs")
+	for i, bd := range bundles {
+		nm := bd.Name
+		if len(nm) > nameW {
+			nm = nm[:nameW-3] + "..."
+		}
+		oldest, newest := "none", "-"
+		if bd.log.OK {
+			oldest, newest = dfull(bd.log.Lo), dfull(bd.log.Hi)
+		}
+		fmt.Fprintf(&b, "  %-*s  %8s  %-12s  %-12s  %10s  %10d\n", nameW, nm, comma(bd.files), oldest, newest, comma(int64(r.DistinctPerBndl[i])), len(bb[i]))
+	}
+	fmt.Fprintf(&b, "\n  %s distinct IPs: %s in only one bundle, %s in 2 or more (%s in all %d).\n", comma(int64(r.TotalDistinct)), comma(int64(r.NSingle)), comma(int64(r.NMulti)), comma(int64(r.NAll)), n)
+	if len(r.Threats) == 0 {
+		b.WriteString("  Threat IPs: none found.\n")
+	} else {
+		var with []string
+		for i, bd := range bundles {
+			if len(bb[i]) > 0 {
+				with = append(with, bd.Name)
+			}
+		}
+		fmt.Fprintf(&b, "  Threat IPs: %d found, in %d of %d bundles: %s\n", len(r.Threats), len(with), n, strings.Join(with, ", "))
+	}
+	if !alreadyPrinted {
+		if w := unreadWarning(bundles); w != "" {
+			b.WriteString("\n" + w)
+		}
+	}
+	if len(warns) > 0 {
+		fmt.Fprintf(&b, "  %d file(s) could not be read completely (see the -out report for details); first: %s\n", len(warns), warns[0])
+	}
+	if len(written) > 0 {
+		b.WriteString("\nFiles written:\n")
+		for _, w := range written {
+			fmt.Fprintf(&b, "  %s\n", w)
+		}
+	} else {
+		b.WriteString("\nNo files written (use -csv, -out or -threats).\n")
+	}
+	return b.String()
+}
+
+// renderBundlesCSV: one row per bundle, including how far back its logs go.
+func renderBundlesCSV(bundles []*bundle, r *result) ([]byte, error) {
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	w.Write([]string{"bundle", "kind", "files_read", "size_mb", "distinct_ips", "ips_only_in_this_bundle", "ips_shared_with_other_bundles", "threat_ips",
+		"oldest_log_entry", "newest_log_entry", "log_days", "dated_log_files", "year_inferred_for_some_dates"})
+	bb := byBundle(bundles, r)
+	for i, bd := range bundles {
+		oldest, newest, days, inferred := "", "", "", "no"
+		if bd.log.OK {
+			oldest, newest = bd.log.Lo.Format("2006-01-02"), bd.log.Hi.Format("2006-01-02")
+			days = strconv.Itoa(int(bd.log.Hi.Sub(bd.log.Lo).Hours()/24 + 0.5))
+			if bd.log.Inferred {
+				inferred = "yes"
+			}
+		}
+		w.Write([]string{csvSafe(bd.Name), bd.Kind, strconv.FormatInt(bd.files, 10), fmt.Sprintf("%.0f", float64(bd.bytes)/1048576),
+			strconv.Itoa(r.DistinctPerBndl[i]), strconv.Itoa(r.SinglePerBndl[i]), strconv.Itoa(r.SharedPerBndl[i]), strconv.Itoa(len(bb[i])),
+			oldest, newest, days, strconv.Itoa(bd.logFiles), inferred})
+	}
+	w.Flush()
+	return buf.Bytes(), w.Error()
 }

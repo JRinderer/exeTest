@@ -3,7 +3,8 @@
 `ipxref` reads a folder that holds **all** of your Citrix NetScaler technical support bundles and produces a report
 that answers three questions:
 
-1. **Which IP addresses appear in more than one bundle** (and which appear in *all* of them), and which bundles?
+1. **Every IP address found, and in which bundle(s)**: the ones in *all* bundles first, then those in some, and finally
+   those found in **only one** bundle. (Use `-min-bundles 2` to see only IPs shared between bundles.)
 2. **How far back do each bundle's logs go**, and when was each IP first and last seen?
 3. **Which IPs on the published attacker lists** (the same lists the `nsioc` tool uses) were found, and in which bundle?
 
@@ -37,43 +38,59 @@ Rotated logs inside a bundle (`ns.log.0.gz`, `ns.log.1.gz`, ...) are read automa
 Open a command prompt or PowerShell in the folder that holds `ipxref.exe`:
 
 ```
-ipxref.exe C:\bundles
+ipxref.exe -csv C:\reports\all_ips.csv C:\TechSupport
 ```
 
-That prints the report on screen. To also **save** it, and export the **threat IPs**, write the files to a folder
-*outside* the bundles folder:
+The **results go to the CSV file**. The screen shows only a short summary: one line per bundle (files, oldest and
+newest log entry, IPs found, threat IPs), the totals, any warnings, and the files that were written. Create the
+report folder first, and keep it **outside** the bundles folder.
+
+If you give **no output file at all**, `ipxref` writes `ipxref_ips.csv` in the folder you ran it from:
 
 ```
-ipxref.exe -out C:\reports\ips.txt -csv C:\reports\ips.csv -threats C:\reports\threats.csv C:\bundles
+ipxref.exe C:\TechSupport
 ```
 
-If a path has spaces, put it in quotes: `ipxref.exe -out "C:\my reports\ips.txt" "C:\my bundles"`.
+Other files you can ask for in the same run:
 
-On Mac or Linux the same command works with `./ipxref /path/to/bundles`.
+```
+ipxref.exe -csv C:\reports\all_ips.csv -threats C:\reports\threats.csv -bundles-csv C:\reports\bundles.csv -out C:\reports\full_report.txt C:\TechSupport
+```
+
+| File | What is in it |
+|---|---|
+| `-csv` | **every IP**, one row each: threat flag, bundle names, a hits column per bundle, first/last seen |
+| `-threats` | only the threat IPs, one row per IP per bundle (`.csv`), or readable text for any other name |
+| `-bundles-csv` | one row per bundle: files, IP counts, threat IPs, **oldest and newest log entry** and days of logs |
+| `-out` | the full readable text report with every IP (the long version of what used to print on screen) |
+
+To see the full text report **on screen** as well, add `-print`.
+
+If a path has spaces, put it in quotes: `ipxref.exe -csv "C:\my reports\ips.csv" "C:\my bundles"`.
+On Mac or Linux the same command works with `./ipxref -csv ips.csv /path/to/bundles`.
 
 A large set of bundles can take a few minutes. Add `-v` to see progress.
 
 ### Only want the threat IPs? Use `-threats-only`
 
 ```
-ipxref.exe -threats-only C:\bundles
-ipxref.exe -threats-only -out C:\reports\threats.txt -threats C:\reports\threats.csv C:\bundles
+ipxref.exe -threats-only -threats C:\reports\threats.csv C:\TechSupport
 ```
 
-This skips the shared-IP list and log history and shows **only** the IPs from the published attacker lists, with the
-bundle each one was found in (by bundle, then by IP). `-threats` still writes the file, `-out` saves the screen text,
-`-no-scanners` leaves out the weak scanner leads, and `-ignore` still applies. (`-csv` cannot be combined with it.)
+This lists **only** the IPs from the published attacker lists, with the bundle each was found in. With no `-threats`
+file it writes `ipxref_threats.csv` in the current folder. (`-csv` cannot be combined with it.)
 
 ## 4. What you get
 
-### On screen / in `-out` (text report)
+### The text report (`-out`, or `-print` on screen)
 
 | Section | What it tells you |
 |---|---|
-| **SUMMARY** | how many distinct IPs there were, how many appear in 2+ bundles, how many in *all* bundles, and how many of the shared IPs are threat IPs |
+| **SUMMARY** | how many distinct IPs there were, how many appear in only one bundle, how many are shared and how many are in *all* bundles, and how many are threat IPs |
 | **BUNDLES COMPARED** | each bundle with its file count, size and number of distinct IPs |
 | **LOG HISTORY** | for each bundle: oldest and newest log entry and how many days that covers; the period that *every* bundle's logs cover; warnings for bundles with under 7 days of logs or no dated logs |
 | **KNOWN THREAT IPs** | for each bundle, the addresses found that are on the published attacker lists (first 12 per bundle; use `-threats` for all) |
+| **IN ONLY ONE BUNDLE** | every IP found in just one bundle, listed under that bundle in a compact table (hits, threat flag, first/last seen, file). Threat IPs come first in each bundle |
 | **IN ALL N BUNDLES** / **IN k OF N BUNDLES** | the shared IPs, most widespread first. **Every shared IP says whether it is on the threat lists** (`<<< THREAT IP: KNOWN ATTACKER` next to the address, and a `Threat list:` line). The "in all" heading names the bundles. Each IP shows total hits, first/last seen, **the name of every bundle it was found in** (with hits and dates), the bundles it was *not* found in (when few), and the files it appears in. Lists longer than 40 bundles are cut to the 40 with most hits; use `-full` or the CSV for all |
 | **HOW TO READ THIS** | a short legend |
 
@@ -81,7 +98,7 @@ Warnings appear at the top if any file could not be read (see Troubleshooting).
 
 ### `-csv ips.csv` (opens in Excel)
 
-One row per shared IP. The columns, in order:
+One row per IP **found in the bundles** (every IP by default; shared IPs and single-bundle IPs alike). The columns, in order:
 
 | Column | Meaning |
 |---|---|
@@ -96,8 +113,8 @@ One row per shared IP. The columns, in order:
 | `threat_listed_by` | who published the threat IP (blank if not a threat IP) |
 
 To see only the IPs that are in **all** your bundles, run with `-min-bundles` set to the number of bundles
-(for example `-min-bundles 4`), or filter `in_all_bundles` = `yes` in Excel. To see only threat IPs, filter
-`is_threat_ip` = `YES`.
+(for example `-min-bundles 4`), or filter `in_all_bundles` = `yes` in Excel. To see only IPs in **one** bundle, filter
+`bundles_found_in` = `1`. To see only threat IPs, filter `is_threat_ip` = `YES`.
 
 ### `-threats threats.csv` or `threats.txt`
 
@@ -117,14 +134,16 @@ Threat types: **known attacker** (published exploitation IPs), **password-spray 
 | Option | What it does |
 |---|---|
 | `-dir FOLDER` | the folder that holds the bundles. Optional: you can instead put the folder last on the command line (`ipxref.exe C:\bundles`) |
-| `-out FILE` | save the text report |
-| `-csv FILE` | save the shared-IP list as CSV |
+| `-out FILE` | save the full readable text report (every IP) |
+| `-print` | also print the full text report on screen (by default only a short summary is shown) |
+| `-bundles-csv FILE` | one row per bundle, including oldest and newest log entry |
+| `-csv FILE` | **the main output**: every IP as CSV (default file `ipxref_ips.csv` if you give no output file) |
 | `-threats FILE` | save the threat IPs per bundle (`.csv` = spreadsheet, otherwise text) |
 | `-threats-only` | show **only** the threat IPs per bundle (no shared-IP list or log history) |
 | `-no-scanners` | leave weak scanner-lead IPs out of the threat report |
-| `-min-bundles N` | list IPs found in at least N bundles (default 2). Use the number of bundles to see only IPs in *all* of them |
+| `-min-bundles N` | list IPs found in at least N bundles. **Default 1 = every IP, even if it is in only one bundle.** Use 2 for only shared IPs, or the number of bundles for only IPs in *all* of them |
 | `-ignore FILE` | leave out addresses you know are normal (see below) |
-| `-max-ips N` | most IPs printed in the text report (default 300). The CSV always has all of them |
+| `-max-ips N` | with `-print`: most IPs printed on screen (default 300; 0 = no limit). Threat IPs are always printed. The `-out` file and the CSV always have **every** IP |
 | `-full` | always list every bundle for each IP, however many |
 | `-include-private` | also count private and reserved addresses (left out by default) |
 | `-include-versions` | also count version-looking numbers such as `Build 14.1.73.37` (left out by default) |

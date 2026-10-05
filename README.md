@@ -120,12 +120,12 @@ from a newer checker script (the line numbers in `gen_iocdata.pl` refer to v1.12
 
 **Step-by-step instructions: [cmd/ipxref/README.md](cmd/ipxref/README.md).**
 
-`ipxref` reads a folder that holds all your bundles and reports the IP addresses that show up in more than one of
-them, and in which bundles. Standard library only, read-only, same path-safety rules as `nsioc`.
+`ipxref` reads a folder that holds all your bundles and reports **every IP address found, and in which bundle(s)**,
+flagging the ones on the published threat lists (use `-min-bundles 2` for only IPs shared between bundles). Standard library only, read-only, same path-safety rules as `nsioc`.
 
 ```sh
-ipxref /path/to/folder-of-bundles                       # report on screen
-ipxref -out ips.txt -csv ips.csv /path/to/folder        # also a text report and an Excel-friendly CSV
+ipxref -csv ips.csv /path/to/folder-of-bundles           # every IP to a CSV; the screen shows a short summary
+ipxref -csv ips.csv -out report.txt -print /path/to/folder   # also a full text report (and show it on screen)
 ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
 ```
 
@@ -158,10 +158,12 @@ ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
 
 | Flag | Meaning |
 |---|---|
-| `-min-bundles N` | list IPs found in at least N bundles (default 2) |
-| `-max-ips N` | most IPs printed in the text report (default 300; the CSV always has all) |
+| `-min-bundles N` | list IPs found in at least N bundles (default 1 = every IP; 2 = only shared IPs) |
+| `-max-ips N` | most IPs printed on screen (default 300, threat IPs always shown; the `-out` file and CSV have every IP) |
 | `-full` | always list every bundle for each IP, however many |
-| `-out FILE`, `-csv FILE` | save the report / a CSV with one row per shared IP: threat flag, bundle names, a hits column per bundle, first/last seen. Refused if inside the searched folder |
+| `-csv FILE` | **main output:** one row per IP (every IP by default): threat flag, bundle names, a hits column per bundle, first/last seen. Written to `ipxref_ips.csv` if you give no output file. Refused if inside the searched folder |
+| `-out FILE`, `-print` | the full readable text report: save it / also show it on screen (by default only a short summary is printed) |
+| `-bundles-csv FILE` | one row per bundle, with its oldest and newest log entry |
 | `-threats FILE` | export threat IPs found in each bundle (`.csv` or text) |
 | `-threats-only` | show only the threat IPs per bundle (skips the shared-IP list and log history) |
 | `-no-scanners` | leave weak scanner-lead IPs out of the threat report |
