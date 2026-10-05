@@ -1043,7 +1043,17 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 	if inAll == 1 {
 		verb = "appears"
 	}
-	fmt.Fprintf(&b, "  %s %s in ALL %d bundles.\n\n", comma(int64(inAll)), verb, n)
+	fmt.Fprintf(&b, "  %s %s in ALL %d bundles.\n", comma(int64(inAll)), verb, n)
+	thr, thrAll := 0, 0
+	for _, row := range r.Rows {
+		if row.Threat != "" {
+			thr++
+			if len(row.Seen) == n {
+				thrAll++
+			}
+		}
+	}
+	fmt.Fprintf(&b, "  %d of the shared IPs %s on the published threat lists (%d of those in ALL bundles). They are marked THREAT IP below.\n\n", thr, map[bool]string{true: "is", false: "are"}[thr == 1], thrAll)
 
 	fmt.Fprintf(&b, "BUNDLES COMPARED\n----------------\n")
 	nameW := 6
@@ -1101,7 +1111,16 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 			break
 		}
 		listed++
-		fmt.Fprintf(&b, "\n%-16s  %s hits in %d bundle%s\n", ipString(row.IP), comma(row.Hits), k, pl(k))
+		mark := ""
+		if row.Threat != "" {
+			mark = "   <<< THREAT IP: " + strings.ToUpper(row.Threat)
+		}
+		fmt.Fprintf(&b, "\n%-16s  %s hits in %d bundle%s%s\n", ipString(row.IP), comma(row.Hits), k, pl(k), mark)
+		if row.Threat != "" {
+			fmt.Fprintf(&b, "    Threat list: YES, %s (listed by: %s)\n", row.Threat, row.ThreatSrc)
+		} else {
+			b.WriteString("    Threat list: no (not on the published attacker lists)\n")
+		}
 		if row.Dated {
 			days := int(row.Hi.Sub(row.Lo).Hours()/24 + 0.5)
 			if days == 0 {
@@ -1202,15 +1221,26 @@ func csvSafe(v string) string {
 func renderCSV(bundles []*bundle, r *result) ([]byte, error) {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
-	w.Write([]string{"ip", "bundles_found_in", "bundles_total", "in_all_bundles", "total_hits", "first_seen", "last_seen", "days_between", "bundles (hits)", "dates_per_bundle", "typical_files"})
+	hdr := []string{"ip", "is_threat_ip", "threat_type", "bundles_found_in", "in_all_bundles", "found_in_bundles"}
+	for _, bd := range bundles {
+		hdr = append(hdr, csvSafe(bd.Name)+" (hits)") // one column per bundle: blank = not found there
+	}
+	hdr = append(hdr, "total_hits", "first_seen", "last_seen", "days_between", "dates_per_bundle", "typical_files", "threat_listed_by")
+	w.Write(hdr)
 	for _, row := range r.Rows {
 		var names []string
+		hits := make([]string, len(bundles))
 		for _, sn := range row.Seen {
-			names = append(names, fmt.Sprintf("%s (%d)", bundles[sn.B].Name, sn.S.Hits))
+			names = append(names, bundles[sn.B].Name)
+			hits[sn.B] = strconv.FormatInt(sn.S.Hits, 10)
 		}
 		inAll := "no"
 		if len(row.Seen) == len(bundles) {
 			inAll = "yes"
+		}
+		isThreat, threatType := "no", ""
+		if row.Threat != "" {
+			isThreat, threatType = "YES", row.Threat
 		}
 		first, lastSeen, dayStr := "", "", ""
 		if row.Dated {
@@ -1223,9 +1253,11 @@ func renderCSV(bundles []*bundle, r *result) ([]byte, error) {
 				perB = append(perB, fmt.Sprintf("%s: %s to %s", bundles[sn.B].Name, sn.R.Lo.Format("2006-01-02"), sn.R.Hi.Format("2006-01-02")))
 			}
 		}
-		w.Write([]string{ipString(row.IP), strconv.Itoa(len(row.Seen)), strconv.Itoa(len(bundles)), inAll,
-			strconv.FormatInt(row.Hits, 10), first, lastSeen, dayStr, csvSafe(strings.Join(names, "; ")),
-			csvSafe(strings.Join(perB, "; ")), csvSafe(strings.Join(row.Typical, "; "))})
+		rec := []string{ipString(row.IP), isThreat, threatType, strconv.Itoa(len(row.Seen)), inAll, csvSafe(strings.Join(names, "; "))}
+		rec = append(rec, hits...)
+		rec = append(rec, strconv.FormatInt(row.Hits, 10), first, lastSeen, dayStr,
+			csvSafe(strings.Join(perB, "; ")), csvSafe(strings.Join(row.Typical, "; ")), csvSafe(row.ThreatSrc))
+		w.Write(rec)
 	}
 	w.Flush()
 	return buf.Bytes(), w.Error()

@@ -70,19 +70,34 @@ bundle each one was found in (by bundle, then by IP). `-threats` still writes th
 
 | Section | What it tells you |
 |---|---|
-| **SUMMARY** | how many distinct IPs there were, how many appear in 2+ bundles, how many in *all* bundles |
+| **SUMMARY** | how many distinct IPs there were, how many appear in 2+ bundles, how many in *all* bundles, and how many of the shared IPs are threat IPs |
 | **BUNDLES COMPARED** | each bundle with its file count, size and number of distinct IPs |
 | **LOG HISTORY** | for each bundle: oldest and newest log entry and how many days that covers; the period that *every* bundle's logs cover; warnings for bundles with under 7 days of logs or no dated logs |
 | **KNOWN THREAT IPs** | for each bundle, the addresses found that are on the published attacker lists (first 12 per bundle; use `-threats` for all) |
-| **IN ALL N BUNDLES** / **IN k OF N BUNDLES** | the shared IPs, most widespread first. The "in all" heading names the bundles. Each IP shows total hits, first/last seen, **the name of every bundle it was found in** (with hits and dates), the bundles it was *not* found in (when few), and the files it appears in. Lists longer than 40 bundles are cut to the 40 with most hits; use `-full` or the CSV for all |
+| **IN ALL N BUNDLES** / **IN k OF N BUNDLES** | the shared IPs, most widespread first. **Every shared IP says whether it is on the threat lists** (`<<< THREAT IP: KNOWN ATTACKER` next to the address, and a `Threat list:` line). The "in all" heading names the bundles. Each IP shows total hits, first/last seen, **the name of every bundle it was found in** (with hits and dates), the bundles it was *not* found in (when few), and the files it appears in. Lists longer than 40 bundles are cut to the 40 with most hits; use `-full` or the CSV for all |
 | **HOW TO READ THIS** | a short legend |
 
 Warnings appear at the top if any file could not be read (see Troubleshooting).
 
 ### `-csv ips.csv` (opens in Excel)
 
-One row per shared IP: `ip, bundles_found_in, bundles_total, in_all_bundles, total_hits, first_seen, last_seen,
-days_between, bundles (hits), dates_per_bundle, typical_files`.
+One row per shared IP. The columns, in order:
+
+| Column | Meaning |
+|---|---|
+| `ip` | the address |
+| `is_threat_ip` | **YES** if the address is on the published attacker lists, otherwise `no` |
+| `threat_type` | `known attacker`, `password-spray range` or `scanner (lead)` (blank if not a threat IP) |
+| `bundles_found_in` / `in_all_bundles` | how many bundles it is in, and `yes` if it is in every one |
+| `found_in_bundles` | the **names** of the bundles it was found in |
+| `<bundle name> (hits)` | **one column per bundle** with the number of times the IP appears there; **blank = not found in that bundle** |
+| `total_hits`, `first_seen`, `last_seen`, `days_between` | totals and dates from the log lines |
+| `dates_per_bundle`, `typical_files` | the dates and files per bundle |
+| `threat_listed_by` | who published the threat IP (blank if not a threat IP) |
+
+To see only the IPs that are in **all** your bundles, run with `-min-bundles` set to the number of bundles
+(for example `-min-bundles 4`), or filter `in_all_bundles` = `yes` in Excel. To see only threat IPs, filter
+`is_threat_ip` = `YES`.
 
 ### `-threats threats.csv` or `threats.txt`
 
