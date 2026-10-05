@@ -180,10 +180,10 @@ func main() {
 		}
 		return
 	}
-	screen := render(hdr, stats, findings, sc.warnings, sc.cov, floor, *defang)
+	screen := render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, *defang)
 	fmt.Print(screen)
 	if outPath != "" {
-		if err := writeReport(outPath, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, floor, true))); err != nil {
+		if err := writeReport(outPath, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, true))); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
@@ -247,7 +247,7 @@ func defangText(s string) string {
 	}, s)
 }
 
-func render(hdr, stats string, f []*agg, warns []string, cov []covStat, floor Severity, defang bool) string {
+func render(hdr, stats string, f []*agg, warns []string, cov []covStat, unread []string, floor Severity, defang bool) string {
 	var b strings.Builder
 	b.WriteString(hdr)
 	b.WriteString(stats)
@@ -256,6 +256,10 @@ func render(hdr, stats string, f []*agg, warns []string, cov []covStat, floor Se
 
 	covText, covGaps := renderCoverage(cov)
 	b.WriteString(covText)
+	if len(unread) > 0 {
+		covGaps++
+		b.WriteString(renderUnreadable(unread))
+	}
 
 	counts := map[Severity]int{}
 	for _, a := range f {
@@ -351,6 +355,8 @@ type reportDoc struct {
 	Stats     reportStats   `json:"stats"`
 	Coverage  []jsonCov     `json:"coverage"`
 	Findings  []jsonFinding `json:"findings"`
+	// Unreadable lists compressed files in a format nsioc cannot open (xz, zstd, ...): their content was NOT searched.
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
 type reportStats struct {
@@ -376,7 +382,7 @@ func writeJSON(path string, f []*agg, sc *Scanner, bundle string) error {
 		Schema: reportSchema, Tool: "nsioc", Version: version, Bundle: bundle,
 		Generated: time.Now().UTC().Format(time.RFC3339),
 		Stats:     reportStats{sc.files, sc.archives, sc.lines, sc.bytes, sc.maxPer},
-		Coverage:  coverJSON(sc.cov), Findings: out,
+		Coverage:  coverJSON(sc.cov), Findings: out, Unreadable: sc.unread,
 	}
 	var buf bytes.Buffer
 	if err := writeIndented(&buf, doc); err != nil {
@@ -532,6 +538,9 @@ func renderInventory(hdr, stats string, sc *Scanner, redact bool) string {
 	b.WriteString("\n")
 	cov, _ := renderCoverage(sc.cov)
 	b.WriteString(cov)
+	if len(sc.unread) > 0 {
+		b.WriteString(renderUnreadable(sc.unread))
+	}
 
 	inv := append([]invEntry(nil), sc.inv...)
 	sort.Slice(inv, func(i, j int) bool { return inv[i].Path < inv[j].Path })
@@ -736,4 +745,22 @@ func openRegular(r *os.Root, rel string) (*os.File, error) {
 		return nil, fmt.Errorf("not a regular file, skipped")
 	}
 	return f, nil
+}
+
+// renderUnreadable is shown right under COVERAGE: these files were not searched at all.
+func renderUnreadable(unread []string) string {
+	u := append([]string(nil), unread...)
+	sort.Strings(u)
+	var b strings.Builder
+	fmt.Fprintf(&b, "!!! %d FILE(S) COULD NOT BE READ (compressed with a format nsioc cannot open) - their content was NOT searched:\n", len(u))
+	for i, x := range u {
+		if i >= 25 {
+			fmt.Fprintf(&b, "      ... and %d more\n", len(u)-i)
+			break
+		}
+		fmt.Fprintf(&b, "      %s\n", x)
+	}
+	b.WriteString("    Decompress them first (for example  xz -d  or  zstd -d  on a copy), then scan again. Until then, a clean result\n")
+	b.WriteString("    does not cover them. Logs are often the oldest rotated ones, so the missing history may be the important part.\n\n")
+	return b.String()
 }

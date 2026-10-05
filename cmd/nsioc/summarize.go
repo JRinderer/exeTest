@@ -209,6 +209,10 @@ func analyse(doc *reportDoc, fix *time.Time) *analysis {
 		}
 	}
 
+	if len(doc.Unreadable) > 0 {
+		a.gaps++
+	}
+
 	var times []struct {
 		t   string
 		sev Severity
@@ -532,6 +536,9 @@ func (a *analysis) limitSentence() string {
 	if a.logSources == 0 {
 		s = append(s, "no log files were found")
 	}
+	if n := len(a.doc.Unreadable); n > 0 {
+		s = append(s, fmt.Sprintf("%s could not be read (unsupported compression) and were not searched", plural(n, "file", "files")))
+	}
 	if len(s) == 0 {
 		return "Some evidence sources were short or missing."
 	}
@@ -627,6 +634,9 @@ func (a *analysis) investigator(perPhase int) string {
 			m = append(append([]string{}, m[:6]...), fmt.Sprintf("+%d more", len(a.missing)-6))
 		}
 		w("- **Not in the bundle (cannot be assessed):** %s.", strings.Join(m, "; "))
+	}
+	if n := len(a.doc.Unreadable); n > 0 {
+		w("- **NOT SEARCHED:** %s compressed in a format nsioc cannot open (e.g. xz, zstd). Decompress and re-scan; these may be the oldest logs.", plural(n, "file", "files"))
 	}
 	w("")
 	w("## 2. Timeline and the fix")

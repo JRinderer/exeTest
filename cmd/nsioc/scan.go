@@ -53,6 +53,7 @@ type Scanner struct {
 	rules     []*Rule
 	groupBits map[string]int // group -> number of member patterns
 	cov       []covStat      // per covSources entry, guarded by mu
+	unread    []string       // compressed files in a format we cannot open, guarded by mu
 	inv       []invEntry     // every file scanned, guarded by mu
 }
 
@@ -160,8 +161,35 @@ func (s *Scanner) stream(logical string, r io.Reader, depth int) {
 			s.stream(logical+"!/"+label(strings.TrimPrefix(h.Name, "./")), tr, depth+1)
 		}
 	default:
+		if name := unsupportedCompression(head); name != "" {
+			s.mu.Lock()
+			s.unread = append(s.unread, fmt.Sprintf("%s (%s)", logical, name))
+			s.mu.Unlock()
+			io.Copy(io.Discard, br)
+			return
+		}
 		s.text(logical, br)
 	}
+}
+
+// unsupportedCompression names compression formats the standard library cannot read. Such a file would
+// otherwise look like binary data and be skipped silently, hiding a log the investigator expects to be searched.
+func unsupportedCompression(h []byte) string {
+	switch {
+	case bytes.HasPrefix(h, []byte{0xFD, '7', 'z', 'X', 'Z', 0x00}):
+		return "xz"
+	case bytes.HasPrefix(h, []byte{0x28, 0xB5, 0x2F, 0xFD}):
+		return "zstd"
+	case bytes.HasPrefix(h, []byte{0x1F, 0x9D}):
+		return "compress (.Z)"
+	case bytes.HasPrefix(h, []byte{'P', 'K', 0x03, 0x04}):
+		return "zip"
+	case bytes.HasPrefix(h, []byte{'7', 'z', 0xBC, 0xAF, 0x27, 0x1C}):
+		return "7-zip"
+	case bytes.HasPrefix(h, []byte{0x04, 0x22, 0x4D, 0x18}):
+		return "lz4"
+	}
+	return ""
 }
 
 func (s *Scanner) add(local map[string]*agg, key string, sev Severity, id, desc, ref, file string, n int, text string) {
