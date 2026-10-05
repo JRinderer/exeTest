@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -91,6 +92,17 @@ func main() {
 		os.Exit(3)
 	}
 
+	outPath, err := checkOutput("-out", *out, root, "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+	jsonPath, err := checkOutput("-json", *jsonOut, root, outPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+
 	start := time.Now()
 	jobs := make(chan string, 64)
 	var wg sync.WaitGroup
@@ -111,7 +123,7 @@ func main() {
 				if *verbose {
 					fmt.Fprintln(os.Stderr, "scanning", rel)
 				}
-				f, err := os.Open(p)
+				f, err := openRegular(p, root, st.IsDir())
 				if err != nil {
 					sc.warn("%s: %v", rel, err)
 					continue
@@ -152,21 +164,24 @@ func main() {
 	if *inv {
 		text := renderInventory(hdr, stats, sc, *redact)
 		fmt.Print(text)
-		if *out != "" {
-			os.WriteFile(*out, []byte(text), 0o600)
+		if outPath != "" {
+			if err := writeReport(outPath, []byte(text)); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(3)
+			}
 		}
 		return
 	}
 	screen := render(hdr, stats, findings, sc.warnings, sc.cov, floor, *defang)
 	fmt.Print(screen)
-	if *out != "" {
-		if err := os.WriteFile(*out, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, floor, true)), 0o600); err != nil {
+	if outPath != "" {
+		if err := writeReport(outPath, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, floor, true))); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
 	}
-	if *jsonOut != "" {
-		if err := writeJSON(*jsonOut, findings, sc.cov); err != nil {
+	if jsonPath != "" {
+		if err := writeJSON(jsonPath, findings, sc.cov); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
@@ -325,15 +340,15 @@ func writeJSON(path string, f []*agg, cov []covStat) error {
 		}
 		out = append(out, j)
 	}
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer fh.Close()
-	return writeIndented(fh, struct {
+	var buf bytes.Buffer
+	err := writeIndented(&buf, struct {
 		Coverage []jsonCov     `json:"coverage"`
 		Findings []jsonFinding `json:"findings"`
 	}{coverJSON(cov), out})
+	if err != nil {
+		return err
+	}
+	return writeReport(path, buf.Bytes())
 }
 
 func writeIndented(w io.Writer, v any) error {
@@ -584,4 +599,110 @@ func renderInventory(hdr, stats string, sc *Scanner, redact bool) string {
 		}
 	}
 	return b.String()
+}
+
+// within reports whether path is dir itself or lies below it. Both must already be absolute and symlink-resolved.
+func within(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolve returns the absolute path with symlinks resolved in every existing parent directory.
+// The final element may not exist yet (an output file).
+func resolve(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, filepath.Base(abs)), nil
+}
+
+// checkOutput validates a report path before the scan starts. It refuses a path inside the scanned
+// bundle (writing there would change the evidence and get rescanned), a path that is an existing
+// symlink or non-regular file, and the same file as another output. An empty path means "not requested".
+func checkOutput(flagName, p, root, other string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	target, err := resolve(p)
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %v", flagName, p, err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(realRoot); err == nil && !st.IsDir() {
+		realRoot = filepath.Dir(realRoot) // single-file scan: the evidence file's folder is not off limits, the file itself is
+		if target == realRootFile(root) {
+			return "", fmt.Errorf("%s %q is the file being scanned", flagName, p)
+		}
+	} else if within(realRoot, target) {
+		return "", fmt.Errorf("%s %q is inside the scanned directory; write the report elsewhere so the evidence is not changed", flagName, p)
+	}
+	if fi, err := os.Lstat(target); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("%s %q exists and is not a regular file (symlink or special file); refusing to write to it", flagName, p)
+		}
+	}
+	if other != "" && target == other {
+		return "", fmt.Errorf("%s and -out point at the same file", flagName)
+	}
+	return target, nil
+}
+
+func realRootFile(root string) string {
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		return r
+	}
+	return root
+}
+
+// writeReport writes data to a path already validated by checkOutput. It re-checks the opened file so
+// a symlink swapped in after validation is not followed to a special file.
+func writeReport(path string, data []byte) error {
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	if fi, err := fh.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if _, err := fh.Write(data); err != nil {
+		return err
+	}
+	return fh.Close()
+}
+
+// openRegular opens a file found by the directory walk. It refuses anything that is not a regular file
+// at open time (a symlink or FIFO swapped in after the walk) and, for directory scans, anything whose
+// resolved location is outside the scanned root.
+func openRegular(p, root string, dirScan bool) (*os.File, error) {
+	if dirScan {
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return nil, err
+		}
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, err
+		}
+		if !within(realRoot, real) {
+			return nil, fmt.Errorf("resolves outside the scanned directory, skipped")
+		}
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("not a regular file, skipped")
+	}
+	return f, nil
 }

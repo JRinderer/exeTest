@@ -4,8 +4,9 @@ Search Citrix NetScaler **technical support bundles** (`show techsupport`) for t
 compromise (IOCs) of **CVE-2026-88771, CVE-2026-88772** (CTX697096) and **CVE-2026-88779** (CTX697174).
 
 - Written in Go, **standard library only** (no third-party packages).
-- **Read-only.** Bundles are streamed; archives (`.tar`, `.gz`, `.tgz`, `.bz2`, nested) are unpacked in memory.
-  Nothing is written except the optional report files.
+- **Read-only.** Bundles are streamed; archives (`.tar`, `.gz`, `.tgz`, `.bz2`, nested) are unpacked in memory and
+  never extracted to disk, so archive entry names (e.g. `../..`) cannot write anywhere. Only symlink-free regular files
+  inside the scanned folder are opened. Nothing is written except the optional report files.
 - The indicators and detection patterns are ported from
   [ThomasPoppelgaard/netscaler-ctx697096-checker](https://github.com/ThomasPoppelgaard/netscaler-ctx697096-checker)
   (script v1.12, MIT). See `THIRD_PARTY_NOTICES.md`.
@@ -29,7 +30,7 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 
 | Flag | Meaning |
 |---|---|
-| `-out FILE` | also save the report (attacker text is defanged: `;|&$<>` become `_`, `http:` becomes `hxxp:`) |
+| `-out FILE` | also save the report (attacker text is defanged: `;|&$<>` become `_`, `http:` becomes `hxxp:`). Refused if the path is inside the scanned bundle, is a symlink or special file, or is the file being scanned |
 | `-json FILE` | also save findings and coverage as JSON |
 | `-min LEVEL` | lowest severity shown: `info`, `lead`, `check`, `targeted`, `suspect`, `compromise` (default `check`) |
 | `-inventory` | print structure only (folders, extensions, classification, first-line *shape* of unknown files); no contents |

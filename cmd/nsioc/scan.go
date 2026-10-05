@@ -104,7 +104,7 @@ func (s *Scanner) warn(format string, a ...any) {
 // ScanReader scans one on-disk file (or any stream); archives are unpacked in memory, never to disk.
 func (s *Scanner) ScanReader(logical string, r io.Reader) {
 	atomic.AddInt64(&s.files, 1)
-	s.stream(filepath.ToSlash(logical), r, 0)
+	s.stream(label(filepath.ToSlash(logical)), r, 0)
 }
 
 func (s *Scanner) stream(logical string, r io.Reader, depth int) {
@@ -156,7 +156,7 @@ func (s *Scanner) stream(logical string, r io.Reader, depth int) {
 				continue // directories, symlinks, devices
 			}
 			atomic.AddInt64(&s.files, 1)
-			s.stream(logical+"!/"+strings.TrimPrefix(h.Name, "./"), tr, depth+1)
+			s.stream(logical+"!/"+label(strings.TrimPrefix(h.Name, "./")), tr, depth+1)
 		}
 	default:
 		s.text(logical, br)
@@ -467,4 +467,15 @@ type invEntry struct {
 	Loc       int // location source index, -1 = none
 	ByContent bool
 	Shape     string // layout of the first line (letters a/A, digits 9), unclassified text files only
+}
+
+// label makes a file name safe to print: archive entry names come from the bundle and may hold terminal
+// control characters. The name is only ever a label - nothing is extracted or written to disk.
+func label(n string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, n)
 }
