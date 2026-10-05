@@ -103,6 +103,19 @@ func main() {
 		os.Exit(3)
 	}
 
+	// All reads go through an os.Root opened on the scanned folder: a path that leaves it (".." or a
+	// symlink pointing outside) is refused by the Go runtime itself, with no check-then-open gap.
+	scanDir, only := root, "" // only: the single file name when a file (not a folder) was given
+	if !st.IsDir() {
+		scanDir, only = filepath.Dir(root), filepath.Base(root)
+	}
+	rootFS, err := os.OpenRoot(scanDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+	defer rootFS.Close()
+
 	start := time.Now()
 	jobs := make(chan string, 64)
 	var wg sync.WaitGroup
@@ -111,19 +124,11 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for p := range jobs {
-				rel := p
-				if st.IsDir() {
-					if r, err := filepath.Rel(root, p); err == nil {
-						rel = r
-					}
-				} else {
-					rel = filepath.Base(p)
-				}
+			for rel := range jobs { // rel is slash-separated and relative to scanDir
 				if *verbose {
 					fmt.Fprintln(os.Stderr, "scanning", rel)
 				}
-				f, err := openRegular(p, root, st.IsDir())
+				f, err := openRegular(rootFS, rel)
 				if err != nil {
 					sc.warn("%s: %v", rel, err)
 					continue
@@ -134,7 +139,7 @@ func main() {
 		}()
 	}
 	if st.IsDir() {
-		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		fs.WalkDir(rootFS.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				sc.warn("%s: %v", p, err)
 				return nil
@@ -150,7 +155,7 @@ func main() {
 			return nil
 		})
 	} else {
-		jobs <- root
+		jobs <- only
 	}
 	close(jobs)
 	wg.Wait()
@@ -662,10 +667,16 @@ func realRootFile(root string) string {
 	return root
 }
 
-// writeReport writes data to a path already validated by checkOutput. It re-checks the opened file so
-// a symlink swapped in after validation is not followed to a special file.
+// writeReport writes data to a path already validated by checkOutput. The file is created through an
+// os.Root on its folder, so a symlink in the final path component cannot redirect the write elsewhere,
+// and the opened file is re-checked to be a regular file.
 func writeReport(path string, data []byte) error {
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dir, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	fh, err := dir.OpenFile(filepath.Base(path), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -679,24 +690,11 @@ func writeReport(path string, data []byte) error {
 	return fh.Close()
 }
 
-// openRegular opens a file found by the directory walk. It refuses anything that is not a regular file
-// at open time (a symlink or FIFO swapped in after the walk) and, for directory scans, anything whose
-// resolved location is outside the scanned root.
-func openRegular(p, root string, dirScan bool) (*os.File, error) {
-	if dirScan {
-		real, err := filepath.EvalSymlinks(p)
-		if err != nil {
-			return nil, err
-		}
-		realRoot, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			return nil, err
-		}
-		if !within(realRoot, real) {
-			return nil, fmt.Errorf("resolves outside the scanned directory, skipped")
-		}
-	}
-	f, err := os.Open(p)
+// openRegular opens rel (relative to the scanned folder) through the os.Root, which refuses anything that
+// would resolve outside it, and then refuses anything that is not a regular file at open time (for example
+// a file replaced by a FIFO or device after the directory walk).
+func openRegular(r *os.Root, rel string) (*os.File, error) {
+	f, err := r.Open(filepath.FromSlash(rel))
 	if err != nil {
 		return nil, err
 	}
