@@ -576,6 +576,7 @@ func main() {
 		ignore  = flag.String("ignore", "", "file of IPs / CIDR ranges to leave out (your DNS, NTP, VIPs, monitoring), one per line, # for comments")
 		full    = flag.Bool("full", false, "always list every bundle (with hit counts) for each IP")
 		threats = flag.String("threats", "", "write the threat IPs found in each bundle to this file: .csv = spreadsheet (one row per IP per bundle), anything else = readable text")
+		tOnly   = flag.Bool("threats-only", false, "show ONLY the threat IPs found in each bundle (no shared-IP list, no log history); -threats, -out and -no-scanners still work")
 		noScan  = flag.Bool("no-scanners", false, "leave opportunistic scanner IPs (weak 'lead' evidence) out of the threat report")
 		workers = flag.Int("workers", runtime.NumCPU(), "files read in parallel")
 		verbose = flag.Bool("v", false, "print progress")
@@ -614,6 +615,9 @@ func main() {
 	threatsPath, err := checkOutput("-threats", *threats, abs, outPath, csvPath)
 	if err != nil {
 		fatal(err)
+	}
+	if *tOnly && *csvOut != "" {
+		fatal(fmt.Errorf("-csv is the shared-IP list and cannot be used with -threats-only; use -threats FILE.csv for the threat IPs"))
 	}
 	var ign []netip.Prefix
 	if *ignore != "" {
@@ -712,6 +716,29 @@ func main() {
 	wg.Wait()
 
 	rep := compare(bundles, ign, *minB, newThreatDB(!*noScan))
+	if *tOnly {
+		text := unreadWarning(bundles) + renderThreatText(abs, bundles, rep, !*noScan)
+		fmt.Print(text)
+		if outPath != "" {
+			if err := writeFile(outPath, []byte(text)); err != nil {
+				fatal(err)
+			}
+		}
+		if threatsPath != "" {
+			var data []byte
+			if strings.EqualFold(filepath.Ext(threatsPath), ".csv") {
+				if data, err = renderThreatCSV(bundles, rep); err != nil {
+					fatal(err)
+				}
+			} else {
+				data = []byte(text)
+			}
+			if err := writeFile(threatsPath, data); err != nil {
+				fatal(err)
+			}
+		}
+		return
+	}
 	text := render(abs, bundles, rep, notBundles, sc.warnings, *minB, *maxIPs, *full, *priv, *vers, *ignore != "", threatsPath != "", time.Since(start))
 	fmt.Print(text)
 	if outPath != "" {
@@ -1003,24 +1030,7 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 	}
 	fmt.Fprintf(&b, "Counting        : %s\n\n", filters)
 
-	var unread []string
-	for _, bd := range bundles {
-		for _, u := range bd.unread {
-			unread = append(unread, bd.Name+"/"+u)
-		}
-	}
-	if len(unread) > 0 {
-		sort.Strings(unread)
-		fmt.Fprintf(&b, "!!! %d FILE(S) COULD NOT BE READ (compressed with a format ipxref cannot open) - NOT searched, so IPs in them are missing:\n", len(unread))
-		for i, u := range unread {
-			if i >= 25 {
-				fmt.Fprintf(&b, "      ... and %d more\n", len(unread)-i)
-				break
-			}
-			fmt.Fprintf(&b, "      %s\n", u)
-		}
-		b.WriteString("    Decompress them first (for example  xz -d  or  zstd -d  on a copy) and run again; results are incomplete until then.\n\n")
-	}
+	b.WriteString(unreadWarning(bundles))
 
 	fmt.Fprintf(&b, "SUMMARY\n-------\n")
 	fmt.Fprintf(&b, "  %s distinct IP addresses were found across all bundles.\n", comma(int64(r.TotalDistinct)))
@@ -1075,6 +1085,14 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 			b.WriteString("\n")
 			if k == n {
 				fmt.Fprintf(&b, "%s\nIN ALL %d BUNDLES (%d IP%s)\n%s\n", line, n, count, pl(count), line)
+				var all []string
+				for _, bd := range bundles {
+					all = append(all, bd.Name)
+				}
+				if !full && len(all) > 40 {
+					all = append(all[:40], fmt.Sprintf("...and %d more", n-40))
+				}
+				b.WriteString(wrap("  Bundles: ", all, 100, "           "))
 			} else {
 				fmt.Fprintf(&b, "%s\nIN %d OF %d BUNDLES (%d IP%s)\n%s\n", line, k, n, count, pl(count), line)
 			}
@@ -1095,43 +1113,37 @@ func render(dir string, bundles []*bundle, r *result, notBundles, warns []string
 			b.WriteString("    Dates: none (only in files without timestamps, such as configs or command output)\n")
 		}
 		names := make([]string, 0, k)
-		type nh struct {
-			N string
-			H int64
+		// always name the bundles (with hits and dates); very long lists are cut to the 40 with most hits
+		crosses := row.Dated && row.Lo.Year() != row.Hi.Year()
+		order := make([]int, len(row.Seen))
+		for i := range order {
+			order[i] = i
 		}
-		var withHits []nh
-		for _, sn := range row.Seen {
-			withHits = append(withHits, nh{bundles[sn.B].Name, sn.S.Hits})
+		if !full && len(order) > 40 {
+			sort.Slice(order, func(i, j int) bool { return row.Seen[order[i]].S.Hits > row.Seen[order[j]].S.Hits })
+			order = order[:40]
+			sort.Ints(order)
 		}
-		switch {
-		case full || k <= 12:
-			crosses := row.Dated && row.Lo.Year() != row.Hi.Year()
-			for i, x := range withHits {
-				names = append(names, fmt.Sprintf("%s (%s%s)", x.N, comma(x.H), bundleDates(row.Seen[i].R, crosses)))
-			}
-			b.WriteString(wrap("    Found in: ", names, 100, "              "))
-		case n-k <= 12:
+		for _, i := range order {
+			sn := row.Seen[i]
+			names = append(names, fmt.Sprintf("%s (%s%s)", bundles[sn.B].Name, comma(sn.S.Hits), bundleDates(sn.R, crosses)))
+		}
+		b.WriteString(wrap(fmt.Sprintf("    Found in %d of %d: ", k, n), names, 100, "                  "))
+		if len(order) < k {
+			fmt.Fprintf(&b, "    ...and %d more bundles (all of them are in the CSV, or run with -full)\n", k-len(order))
+		}
+		if k < n && n-k <= 12 {
 			have := map[int]bool{}
 			for _, sn := range row.Seen {
 				have[sn.B] = true
 			}
+			var missing []string
 			for i, bd := range bundles {
 				if !have[i] {
-					names = append(names, bd.Name)
+					missing = append(missing, bd.Name)
 				}
 			}
-			if len(names) == 0 {
-				b.WriteString("    Found in: every bundle\n")
-			} else {
-				b.WriteString(wrap("    Found in: all except ", names, 100, "              "))
-			}
-		default:
-			sort.Slice(withHits, func(i, j int) bool { return withHits[i].H > withHits[j].H })
-			for i := 0; i < 8 && i < len(withHits); i++ {
-				names = append(names, fmt.Sprintf("%s (%s)", withHits[i].N, comma(withHits[i].H)))
-			}
-			b.WriteString(wrap("    Most hits in: ", names, 100, "                  "))
-			fmt.Fprintf(&b, "    ...and %d more bundles (full list in the CSV, or run with -full)\n", k-len(names))
+			b.WriteString(wrap("    Not found in: ", missing, 100, "                  "))
 		}
 		if len(row.Typical) > 0 {
 			fmt.Fprintf(&b, "    Typical files: %s\n", strings.Join(row.Typical, ", "))
@@ -1316,4 +1328,29 @@ func daysText(d float64) string {
 		return "1 day"
 	}
 	return fmt.Sprintf("%.0f days", d)
+}
+
+// unreadWarning is the prominent notice about files in a compression format ipxref cannot open.
+func unreadWarning(bundles []*bundle) string {
+	var unread []string
+	for _, bd := range bundles {
+		for _, u := range bd.unread {
+			unread = append(unread, bd.Name+"/"+u)
+		}
+	}
+	if len(unread) == 0 {
+		return ""
+	}
+	sort.Strings(unread)
+	var b strings.Builder
+	fmt.Fprintf(&b, "!!! %d FILE(S) COULD NOT BE READ (compressed with a format ipxref cannot open) - NOT searched, so IPs in them are missing:\n", len(unread))
+	for i, u := range unread {
+		if i >= 25 {
+			fmt.Fprintf(&b, "      ... and %d more\n", len(unread)-i)
+			break
+		}
+		fmt.Fprintf(&b, "      %s\n", u)
+	}
+	b.WriteString("    Decompress them first (for example  xz -d  or  zstd -d  on a copy) and run again; results are incomplete until then.\n\n")
+	return b.String()
 }

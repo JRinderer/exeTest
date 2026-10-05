@@ -163,6 +163,7 @@ ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
 | `-full` | always list every bundle for each IP, however many |
 | `-out FILE`, `-csv FILE` | save the report / a CSV with one row per IP (includes first_seen, last_seen, days_between and dates per bundle). Refused if inside the searched folder |
 | `-threats FILE` | export threat IPs found in each bundle (`.csv` or text) |
+| `-threats-only` | show only the threat IPs per bundle (skips the shared-IP list and log history) |
 | `-no-scanners` | leave weak scanner-lead IPs out of the threat report |
 | `-workers N`, `-v` | parallel files, progress |
 

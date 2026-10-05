@@ -53,6 +53,17 @@ On Mac or Linux the same command works with `./ipxref /path/to/bundles`.
 
 A large set of bundles can take a few minutes. Add `-v` to see progress.
 
+### Only want the threat IPs? Use `-threats-only`
+
+```
+ipxref.exe -threats-only C:\bundles
+ipxref.exe -threats-only -out C:\reports\threats.txt -threats C:\reports\threats.csv C:\bundles
+```
+
+This skips the shared-IP list and log history and shows **only** the IPs from the published attacker lists, with the
+bundle each one was found in (by bundle, then by IP). `-threats` still writes the file, `-out` saves the screen text,
+`-no-scanners` leaves out the weak scanner leads, and `-ignore` still applies. (`-csv` cannot be combined with it.)
+
 ## 4. What you get
 
 ### On screen / in `-out` (text report)
@@ -63,7 +74,7 @@ A large set of bundles can take a few minutes. Add `-v` to see progress.
 | **BUNDLES COMPARED** | each bundle with its file count, size and number of distinct IPs |
 | **LOG HISTORY** | for each bundle: oldest and newest log entry and how many days that covers; the period that *every* bundle's logs cover; warnings for bundles with under 7 days of logs or no dated logs |
 | **KNOWN THREAT IPs** | for each bundle, the addresses found that are on the published attacker lists (first 12 per bundle; use `-threats` for all) |
-| **IN ALL N BUNDLES** / **IN k OF N BUNDLES** | the shared IPs, most widespread first. Each shows total hits, first/last seen, the bundles it was found in (with hits and dates), and the files it appears in |
+| **IN ALL N BUNDLES** / **IN k OF N BUNDLES** | the shared IPs, most widespread first. The "in all" heading names the bundles. Each IP shows total hits, first/last seen, **the name of every bundle it was found in** (with hits and dates), the bundles it was *not* found in (when few), and the files it appears in. Lists longer than 40 bundles are cut to the 40 with most hits; use `-full` or the CSV for all |
 | **HOW TO READ THIS** | a short legend |
 
 Warnings appear at the top if any file could not be read (see Troubleshooting).
@@ -93,6 +104,7 @@ Threat types: **known attacker** (published exploitation IPs), **password-spray 
 | `-out FILE` | save the text report |
 | `-csv FILE` | save the shared-IP list as CSV |
 | `-threats FILE` | save the threat IPs per bundle (`.csv` = spreadsheet, otherwise text) |
+| `-threats-only` | show **only** the threat IPs per bundle (no shared-IP list or log history) |
 | `-no-scanners` | leave weak scanner-lead IPs out of the threat report |
 | `-min-bundles N` | list IPs found in at least N bundles (default 2). Use the number of bundles to see only IPs in *all* of them |
 | `-ignore FILE` | leave out addresses you know are normal (see below) |

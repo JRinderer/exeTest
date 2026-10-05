@@ -132,7 +132,8 @@ func countCats(r *result) (att, spray, scan int) {
 	return
 }
 
-func threatSummary(r *result, nBundles, withThreats int) string {
+// threatSummary names the bundles that contain threat IPs and the ones that do not.
+func threatSummary(r *result, bundles []*bundle, bb map[int][]threatEntry, indent string) string {
 	att, spray, scan := countCats(r)
 	var parts []string
 	if att > 0 {
@@ -144,7 +145,21 @@ func threatSummary(r *result, nBundles, withThreats int) string {
 	if scan > 0 {
 		parts = append(parts, fmt.Sprintf("%d scanner (lead only)", scan))
 	}
-	return fmt.Sprintf("%d threat IP%s found (%s), in %d of %d bundles.", len(r.Threats), pl(len(r.Threats)), strings.Join(parts, ", "), withThreats, nBundles)
+	var with, without []string
+	for i, bd := range bundles {
+		if len(bb[i]) > 0 {
+			with = append(with, fmt.Sprintf("%s (%d)", bd.Name, len(bb[i])))
+		} else {
+			without = append(without, bd.Name)
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%d threat IP%s found (%s).\n", indent, len(r.Threats), pl(len(r.Threats)), strings.Join(parts, ", "))
+	b.WriteString(wrap(fmt.Sprintf("%sBundles with threat IPs (%d of %d; number of threat IPs in brackets): ", indent, len(with), len(bundles)), with, 100, indent+"    "))
+	if len(without) > 0 {
+		b.WriteString(wrap(fmt.Sprintf("%sBundles with none (%d): ", indent, len(without)), without, 100, indent+"    "))
+	}
+	return b.String()
 }
 
 // renderThreats is the section shown in the main report. It is capped per bundle; the export has everything.
@@ -157,8 +172,7 @@ func renderThreats(bundles []*bundle, r *result, exported bool) string {
 		return b.String()
 	}
 	bb := byBundle(bundles, r)
-	with := len(bb)
-	fmt.Fprintf(&b, "  %s\n", threatSummary(r, len(bundles), with))
+	b.WriteString(threatSummary(r, bundles, bb, "  "))
 	b.WriteString("  A threat IP is listed even if it appears in only one bundle. 'Lead' scanners are weak evidence.\n\n")
 	const perBundle = 12
 	for bi, bd := range bundles {
@@ -213,7 +227,8 @@ func renderThreatText(dir string, bundles []*bundle, r *result, withScanners boo
 		return b.String()
 	}
 	bb := byBundle(bundles, r)
-	fmt.Fprintf(&b, "SUMMARY: %s\n", threatSummary(r, len(bundles), len(bb)))
+	b.WriteString("SUMMARY\n")
+	b.WriteString(threatSummary(r, bundles, bb, "  "))
 	b.WriteString("Meaning: the address appears in the bundle's text files. It shows contact or reference, not that an attack\n")
 	b.WriteString("succeeded. First/last seen come from the timestamps of the log lines that contain it.\n\n")
 
