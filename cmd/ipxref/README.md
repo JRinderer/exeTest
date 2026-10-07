@@ -22,6 +22,10 @@ Go: `go build -o ipxref ./cmd/ipxref`.)
 Each bundle must be **its own subfolder** (an extracted bundle) **or its own archive file** (`.tar.gz`, `.tgz`,
 `.gz`, `.bz2`) inside one parent folder. You need at least two.
 
+**Zip files** work too: every archive (such as a UAC `.tar.gz`) inside a `.zip` becomes its own bundle, named
+`zipname/archivename`, so one zip with several collections gives one bundle per host. Other files in the zip are
+not read (a warning gives the count).
+
 ```
 C:\bundles\                      <- the folder you give to ipxref
     siteA\                       <- one extracted bundle (contains etc, flash, netscaler, nsconfig, shell, var)
@@ -182,7 +186,7 @@ threat report.
 | You see | What it means / what to do |
 |---|---|
 | `found 1 bundle(s) ... need at least 2` | The folder you gave holds one bundle (or the bundles are nested deeper). Point `ipxref` at the **parent** folder whose immediate children are the bundles |
-| `!!! N FILE(S) COULD NOT BE READ` | Some files are compressed with a format `ipxref` cannot open (xz, zstd, `.Z`, zip, 7-zip, lz4). They were **not searched**, so their IPs are missing. Decompress copies of them and run again |
+| `!!! N FILE(S) COULD NOT BE READ` | Some files are compressed with a format `ipxref` cannot open (xz, zstd, `.Z`, 7-zip, lz4). They were **not searched**, so their IPs are missing. Decompress copies of them and run again |
 | `-out ... is inside the searched folder` | Save the report somewhere outside the bundles folder |
 | A bundle shows "none found" under LOG HISTORY | It has no log lines with a recognisable timestamp, so its IPs get no dates |
 | The "in all bundles" list is full of normal addresses | Add them to an `-ignore` file |

@@ -7,6 +7,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/bzip2"
@@ -45,16 +46,17 @@ type bstat struct {
 }
 
 type bundle struct {
-	Name    string
-	Kind    string // "folder" or "archive"
-	File    string // archive file name inside the searched folder
-	mu      sync.Mutex
-	ips     map[uint32]*bstat
-	files   int64
-	binary  int64
-	bytes   int64
-	skipped int64    // IPs dropped by the private/reserved/version filters (occurrences)
-	unread  []string // files in a compression format we cannot open (guarded by mu)
+	Name     string
+	Kind     string // "folder", "archive" or "zip member"
+	File     string // archive file name inside the searched folder
+	ZipEntry string // set when the bundle is one archive inside a zip (File is then the zip)
+	mu       sync.Mutex
+	ips      map[uint32]*bstat
+	files    int64
+	binary   int64
+	bytes    int64
+	skipped  int64    // IPs dropped by the private/reserved/version filters (occurrences)
+	unread   []string // files in a compression format we cannot open (guarded by mu)
 
 	names    []string         // interned example file names (guarded by mu)
 	nameIdx  map[string]int32 // guarded by mu
@@ -81,6 +83,7 @@ func (b *bundle) intern(n string) int32 {
 type scanner struct {
 	includePrivate bool
 	allowVersions  bool
+	threats        *threatDB // every list, scanners included: such an IP is never dropped as a 'version'
 	root           *os.Root
 	mu             sync.Mutex
 	warnings       []string
@@ -210,8 +213,12 @@ func (s *scanner) extract(line []byte, fn func(ip uint32), skipped *int64) {
 			continue
 		}
 		if !s.allowVersions && looksLikeVersion(line, start) {
-			*skipped++
-			continue
+			// the version filter is a guess (it also drops "ns 1.2.3.4" or "src_1.2.3.4"): never let it hide an
+			// address that is on the published threat lists
+			if cat, _ := s.threats.lookup(ip); cat == "" {
+				*skipped++
+				continue
+			}
 		}
 		fn(ip)
 	}
@@ -252,6 +259,8 @@ func (s *scanner) stream(b *bundle, logical string, r io.Reader, depth int) {
 		zr := bzip2.NewReader(br)
 		s.stream(b, inner, zr, depth+1)
 		io.Copy(io.Discard, zr)
+	case depth < maxDepth && len(head) >= 4 && string(head[:4]) == "PK\x03\x04":
+		s.zipStream(b, logical, r, br, depth)
 	case depth < maxDepth && len(head) >= 262 && string(head[257:262]) == "ustar":
 		tr := tar.NewReader(br)
 		for {
@@ -644,7 +653,7 @@ func main() {
 		fatal(err)
 	}
 	defer root.Close()
-	sc := &scanner{includePrivate: *priv, allowVersions: *vers, root: root}
+	sc := &scanner{includePrivate: *priv, allowVersions: *vers, root: root, threats: newThreatDB(true)}
 
 	// each immediate subfolder or archive is one bundle
 	entries, err := fs.ReadDir(root.FS(), ".")
@@ -657,6 +666,17 @@ func main() {
 		switch {
 		case e.IsDir():
 			bundles = append(bundles, &bundle{Name: e.Name(), Kind: "folder", ips: map[uint32]*bstat{}})
+		case e.Type().IsRegular() && sc.isZip(e.Name()):
+			zb, other, err := sc.zipBundles(e.Name())
+			if err != nil {
+				sc.warn("%s: %v", e.Name(), err)
+				notBundles = append(notBundles, e.Name())
+				break
+			}
+			bundles = append(bundles, zb...)
+			if other > 0 && len(zb) > 0 {
+				sc.warn("%s: %d file(s) in the zip are not archives and were not read (only the archives inside a zip are compared)", e.Name(), other)
+			}
 		case e.Type().IsRegular() && sc.isArchive(e.Name()):
 			n := e.Name()
 			for _, suf := range []string{".tar.gz", ".tgz", ".tar.bz2", ".tar", ".gz", ".bz2"} {
@@ -692,7 +712,11 @@ func main() {
 					sc.warn("%s: %v", j.full, err)
 					continue
 				}
-				sc.stream(j.b, j.rel, f, 0)
+				if j.b.ZipEntry != "" {
+					sc.zipMember(j.b, f)
+				} else {
+					sc.stream(j.b, j.rel, f, 0)
+				}
 				f.Close()
 				if n := atomic.AddInt64(&done, 1); *verbose && n%500 == 0 {
 					fmt.Fprintf(os.Stderr, "  %d files read\n", n)
@@ -701,7 +725,7 @@ func main() {
 		}()
 	}
 	for _, b := range bundles {
-		if b.Kind == "archive" {
+		if b.Kind == "archive" || b.ZipEntry != "" {
 			jobs <- job{b, b.File, b.Name}
 			continue
 		}
@@ -1560,4 +1584,158 @@ func renderBundlesCSV(bundles []*bundle, r *result) ([]byte, error) {
 	}
 	w.Flush()
 	return buf.Bytes(), w.Error()
+}
+
+// ---------------------------------------------------------------------------------------------------
+// zip files: each archive inside a zip is its own bundle (a zip of UAC collections holds one .tar.gz per host)
+
+const maxZipMem = 1 << 30
+
+func isArchiveHead(head []byte) bool {
+	return (len(head) > 2 && head[0] == 0x1f && head[1] == 0x8b) ||
+		(len(head) >= 4 && head[0] == 'B' && head[1] == 'Z' && head[2] == 'h') ||
+		(len(head) >= 262 && string(head[257:262]) == "ustar")
+}
+
+func (s *scanner) isZip(name string) bool {
+	f, err := s.openRegular(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 4)
+	n, _ := io.ReadFull(f, head)
+	return n == 4 && string(head) == "PK\x03\x04"
+}
+
+// zipBundles lists the archives inside a zip (by their first bytes, not their names). A zip with no archive in
+// it becomes one bundle (its files are read as they are). other counts the non-archive files skipped otherwise.
+func (s *scanner) zipBundles(name string) (out []*bundle, other int, err error) {
+	f, err := s.openRegular(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	zr, err := zip.NewReader(f, fi.Size())
+	if err != nil {
+		return nil, 0, fmt.Errorf("not a readable zip: %v", err)
+	}
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	seen := map[string]int{}
+	for _, zf := range zr.File {
+		if zf.FileInfo().IsDir() || !zf.Mode().IsRegular() {
+			continue
+		}
+		if zf.Flags&1 != 0 {
+			other++
+			continue
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			other++
+			continue
+		}
+		head := make([]byte, 512)
+		n, _ := io.ReadFull(rc, head)
+		rc.Close()
+		if !isArchiveHead(head[:n]) {
+			other++
+			continue
+		}
+		n2 := filepath.Base(zf.Name)
+		for _, suf := range []string{".tar.gz", ".tgz", ".tar.bz2", ".tar", ".gz", ".bz2"} {
+			if strings.HasSuffix(strings.ToLower(n2), suf) {
+				n2 = n2[:len(n2)-len(suf)]
+				break
+			}
+		}
+		bn := base + "/" + n2
+		if seen[bn]++; seen[bn] > 1 {
+			bn += "#" + strconv.Itoa(seen[bn])
+		}
+		out = append(out, &bundle{Name: bn, Kind: "zip member", File: name, ZipEntry: zf.Name, ips: map[uint32]*bstat{}})
+	}
+	if len(out) == 0 {
+		return []*bundle{{Name: base, Kind: "archive", File: name, ips: map[uint32]*bstat{}}}, 0, nil
+	}
+	return out, other, nil
+}
+
+// zipMember reads the one archive a zip-member bundle stands for.
+func (s *scanner) zipMember(b *bundle, f *os.File) {
+	fi, err := f.Stat()
+	if err != nil {
+		s.warn("%s: %v", b.File, err)
+		return
+	}
+	zr, err := zip.NewReader(f, fi.Size())
+	if err != nil {
+		s.warn("%s: not a readable zip: %v", b.File, err)
+		return
+	}
+	for _, zf := range zr.File {
+		if zf.Name != b.ZipEntry {
+			continue
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			s.warn("%s/%s: %v", b.File, zf.Name, err)
+			return
+		}
+		defer rc.Close()
+		s.stream(b, label(filepath.Base(zf.Name)), rc, 0)
+		return
+	}
+	s.warn("%s: %s not found in the zip", b.File, b.ZipEntry)
+}
+
+// zipStream reads a zip met while unpacking (a zip on disk is read in place, a nested one in memory).
+func (s *scanner) zipStream(b *bundle, logical string, r io.Reader, br *bufio.Reader, depth int) {
+	var ra io.ReaderAt
+	var size int64
+	if f, ok := r.(*os.File); ok {
+		fi, err := f.Stat()
+		if err != nil {
+			s.warn("%s/%s: %v", b.Name, logical, err)
+			return
+		}
+		ra, size = f, fi.Size()
+	} else {
+		buf, err := io.ReadAll(io.LimitReader(br, maxZipMem+1))
+		if err != nil || len(buf) > maxZipMem {
+			b.mu.Lock()
+			b.unread = append(b.unread, fmt.Sprintf("%s (zip inside an archive, over %d MB or unreadable)", logical, maxZipMem>>20))
+			b.mu.Unlock()
+			return
+		}
+		ra, size = bytes.NewReader(buf), int64(len(buf))
+	}
+	zr, err := zip.NewReader(ra, size)
+	if err != nil {
+		s.warn("%s/%s: not a readable zip: %v", b.Name, logical, err)
+		return
+	}
+	for _, zf := range zr.File {
+		name := label(strings.TrimPrefix(zf.Name, "./"))
+		if zf.FileInfo().IsDir() || !zf.Mode().IsRegular() {
+			continue
+		}
+		if zf.Flags&1 != 0 {
+			b.mu.Lock()
+			b.unread = append(b.unread, name+" (encrypted zip entry)")
+			b.mu.Unlock()
+			continue
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			s.warn("%s/%s: %v", b.Name, name, err)
+			continue
+		}
+		s.stream(b, name, rc, depth+1)
+		rc.Close()
+	}
 }

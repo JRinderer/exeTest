@@ -106,9 +106,15 @@ conservative: it says "indicated" or "not established", and never that a system 
 - Not ported from the original script: before/after-fix tagging, comparison of `ns.conf` against older saved copies,
   and checks that need a live system.
 - **Compressed files:** gzip, bzip2 and tar are recognised by their first bytes, not their name, so rotated logs such as
-  `ns.log.0.gz`, `ns.log.1.gz` or even an extensionless gzip `ns.log.0` are unpacked and searched. **xz, zstd, `.Z`, zip,
+  `ns.log.0.gz`, `ns.log.1.gz` or even an extensionless gzip `ns.log.0` are unpacked and searched. **xz, zstd, `.Z`,
   7-zip and lz4** cannot be read with Go's standard library; such files are listed under a `!!! ... COULD NOT BE READ`
   warning (in the report, the JSON and both summaries) and are **not searched**. Decompress them on a copy and re-run.
+- **UAC (Unix-like Artifacts Collector) output** can be scanned like a bundle (folder, `.tar.gz`, or a `.zip` holding `.tar.gz` collections: zips are read in place, encrypted zip entries are listed as not read; a zip with several hosts is reported as one scan, the path in each finding names the host).
+  Collected logs, configs, cron and web files are searched as usual. The `bodyfile` is read as a **file listing**: each
+  entry's path goes through the file-name rules and is shown with its modification time. `hash_executables*` lists are
+  searched for the published **SHA-256** values only (UAC's default MD5/SHA-1 lists cannot be matched). What UAC does not
+  collect (for example `ns.conf` or `/var/core`, depending on the profile) is simply absent, so check the coverage table.
+  Tested on a synthetic UAC tree only.
 - Tested on synthetic bundles only; the file layout of a real bundle may need `-map` tweaks.
 - The Windows build is cross-compiled and untested on Windows.
 
@@ -144,7 +150,7 @@ ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
   config or command output has no date. Log lines without a year (plain syslog) are placed in the year of the
   bundle's newest dated line, and marked "(year inferred)".
 - **Rotated and compressed logs** (`ns.log.0`, `ns.log.1.gz`, ...) are read; gzip/bzip2 are detected by content, so a
-  missing `.gz` extension does not matter. xz, zstd, `.Z`, zip, 7-zip and lz4 files cannot be read and are listed in a
+  missing `.gz` extension does not matter. xz, zstd, `.Z`, 7-zip and lz4 files cannot be read and are listed in a
   warning at the top of the report (their IPs are missing until you decompress them).
 - **Threat IPs:** a **KNOWN THREAT IPs** section lists, per bundle, every address that is on the published attacker
   lists `nsioc` uses (known attackers, password-spray ranges and, as weak "leads", GreyNoise-tagged scanners), even if it

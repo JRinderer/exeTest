@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/bzip2"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -142,6 +144,8 @@ func (s *Scanner) stream(logical string, r io.Reader, depth int) {
 		if _, err := io.Copy(io.Discard, br2); err != nil {
 			s.warn("%s: bzip2 stream ended early (%v)", logical, err)
 		}
+	case depth < maxDepth && len(head) >= 4 && string(head[:4]) == "PK\x03\x04":
+		s.zipStream(logical, r, br, depth)
 	case depth < maxDepth && len(head) >= 262 && string(head[257:262]) == "ustar":
 		atomic.AddInt64(&s.archives, 1)
 		tr := tar.NewReader(br)
@@ -266,6 +270,9 @@ func (s *Scanner) text(logical string, br *bufio.Reader) {
 		ent.Shape = shape(head)
 	}
 
+	isBody := bodyfileRe.MatchString(lp)
+	isHashList := uacHashRe.MatchString(lp)
+
 	var active []*Rule
 	for _, r := range s.rules {
 		if binary && !r.Bin {
@@ -310,6 +317,14 @@ func (s *Scanner) text(logical string, br *bufio.Reader) {
 				}
 			}
 			s.line(local, logical, lineNo, body, lower, active, binary, gmask)
+			if !cont {
+				if isBody {
+					s.bodyLine(local, logical, lineNo, body)
+				}
+				if isHashList {
+					s.hashLine(local, logical, lineNo, body)
+				}
+			}
 		}
 		if err == bufio.ErrBufferFull {
 			continue
@@ -507,4 +522,58 @@ func label(n string) string {
 		}
 		return r
 	}, n)
+}
+
+// maxZipMem caps how much of a zip nested inside another archive is held in memory (a zip needs random access; a
+// zip that is a plain file on disk is read in place and has no cap).
+const maxZipMem = 1 << 30
+
+// zipStream scans every regular file in a zip, in memory. Each member goes back through stream, so a .tar.gz
+// inside the zip (a UAC collection) is unpacked and searched like any other bundle.
+func (s *Scanner) zipStream(logical string, r io.Reader, br *bufio.Reader, depth int) {
+	var ra io.ReaderAt
+	var size int64
+	if f, ok := r.(*os.File); ok {
+		fi, err := f.Stat()
+		if err != nil {
+			s.warn("%s: %v", logical, err)
+			return
+		}
+		ra, size = f, fi.Size()
+	} else {
+		buf, err := io.ReadAll(io.LimitReader(br, maxZipMem+1))
+		if err != nil || len(buf) > maxZipMem {
+			s.mu.Lock()
+			s.unread = append(s.unread, fmt.Sprintf("%s (zip inside an archive, over %d MB or unreadable)", logical, maxZipMem>>20))
+			s.mu.Unlock()
+			return
+		}
+		ra, size = bytes.NewReader(buf), int64(len(buf))
+	}
+	zr, err := zip.NewReader(ra, size)
+	if err != nil {
+		s.warn("%s: not a readable zip: %v", logical, err)
+		return
+	}
+	atomic.AddInt64(&s.archives, 1)
+	for _, f := range zr.File {
+		name := logical + "!/" + label(strings.TrimPrefix(f.Name, "./"))
+		if f.FileInfo().IsDir() || !f.Mode().IsRegular() {
+			continue // directories, symlinks
+		}
+		if f.Flags&1 != 0 {
+			s.mu.Lock()
+			s.unread = append(s.unread, name+" (encrypted zip entry)")
+			s.mu.Unlock()
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			s.warn("%s: %v", name, err)
+			continue
+		}
+		atomic.AddInt64(&s.files, 1)
+		s.stream(name, rc, depth+1)
+		rc.Close()
+	}
 }
