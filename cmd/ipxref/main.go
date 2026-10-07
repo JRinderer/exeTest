@@ -31,7 +31,7 @@ import (
 
 const (
 	version  = "1.0"
-	maxDepth = 6
+	maxDepth = 12 // every zip, gz, bz2 and tar layer counts one
 )
 
 // ---------------------------------------------------------------------------------------------------

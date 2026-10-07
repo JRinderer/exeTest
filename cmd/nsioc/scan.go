@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 )
 
-const maxDepth = 6 // tar -> file -> gz -> ... nesting limit
+const maxDepth = 12 // nesting limit: every zip, gz, bz2 and tar layer counts one (zip -> tar.gz -> tar -> tar -> jar is already 6)
 
 type hit struct {
 	N    int
