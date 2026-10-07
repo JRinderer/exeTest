@@ -40,6 +40,8 @@ func main() {
 		workers  = flag.Int("workers", runtime.NumCPU(), "files scanned in parallel")
 		listRule = flag.Bool("rules", false, "list the loaded rules and indicator counts, then exit")
 		iocFile  = flag.String("ioc-file", "", "file of your own indicators (one per line, # comments; ${IFS} also matches its disguises; re:<regex> for a regex)")
+		each     = flag.Bool("each", false, "the folder holds many bundles (one subfolder or archive each): scan each on its own, write one report per bundle into the -out FOLDER and a summary table to -csv")
+		csvOut   = flag.String("csv", "", "with -each: summary table, one row per bundle (default nsioc_each.csv)")
 		verbose  = flag.Bool("v", false, "print every file as it is scanned")
 		inv      = flag.Bool("inventory", false, "print what the bundle contains (structure only, no file contents) instead of findings; use it to check classification")
 		redact   = flag.Bool("redact", true, "with -inventory: mask IPs, long numbers and dates in paths so the output is safe to read out or share")
@@ -93,6 +95,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown severity %q\n", *minSev)
 		os.Exit(3)
 	}
+	if *each {
+		os.Exit(runEach(*dir, *out, *csvOut, *iocFile, *maxPer, *workers, *verbose, floor))
+	}
 	root, err := filepath.Abs(*dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -115,6 +120,50 @@ func main() {
 		os.Exit(3)
 	}
 
+	start := time.Now()
+	skipped, err := scanTarget(sc, root, st, *workers, *verbose)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+	elapsed := time.Since(start)
+
+	findings := sc.sorted()
+	hdr := fmt.Sprintf("nsioc %s: searched %s\n", version, root)
+	stats := fmt.Sprintf("%d files (%d archives unpacked in memory, %d non-regular skipped), %.1f MB, %d lines, %s\n",
+		sc.files, sc.archives, skipped, float64(sc.bytes)/1048576, sc.lines, elapsed.Round(time.Millisecond))
+
+	if *inv {
+		text := renderInventory(hdr, stats, sc, *redact)
+		fmt.Print(text)
+		if outPath != "" {
+			if err := writeReport(outPath, []byte(text)); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(3)
+			}
+		}
+		return
+	}
+	screen := render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, *defang)
+	fmt.Print(screen)
+	fmt.Print(sc.cronVerdict(findings, *defang).Text)
+	if outPath != "" {
+		if err := writeReport(outPath, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, true)+sc.cronVerdict(findings, true).Text)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+	}
+	if jsonPath != "" {
+		if err := writeJSON(jsonPath, findings, sc, root); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+	}
+	os.Exit(exitCode(findings))
+}
+
+// scanTarget scans one folder, archive or file into sc and returns how many non-regular entries were skipped.
+func scanTarget(sc *Scanner, root string, st os.FileInfo, workers int, verbose bool) (int64, error) {
 	// All reads go through an os.Root opened on the scanned folder: a path that leaves it (".." or a
 	// symlink pointing outside) is refused by the Go runtime itself, with no check-then-open gap.
 	scanDir, only := root, "" // only: the single file name when a file (not a folder) was given
@@ -123,21 +172,19 @@ func main() {
 	}
 	rootFS, err := os.OpenRoot(scanDir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(3)
+		return 0, err
 	}
 	defer rootFS.Close()
 
-	start := time.Now()
 	jobs := make(chan string, 64)
 	var wg sync.WaitGroup
 	var skipped int64
-	for i := 0; i < *workers; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for rel := range jobs { // rel is slash-separated and relative to scanDir
-				if *verbose {
+				if verbose {
 					fmt.Fprintln(os.Stderr, "scanning", rel)
 				}
 				f, err := openRegular(rootFS, rel)
@@ -171,39 +218,7 @@ func main() {
 	}
 	close(jobs)
 	wg.Wait()
-	elapsed := time.Since(start)
-
-	findings := sc.sorted()
-	hdr := fmt.Sprintf("nsioc %s: searched %s\n", version, root)
-	stats := fmt.Sprintf("%d files (%d archives unpacked in memory, %d non-regular skipped), %.1f MB, %d lines, %s\n",
-		sc.files, sc.archives, skipped, float64(sc.bytes)/1048576, sc.lines, elapsed.Round(time.Millisecond))
-
-	if *inv {
-		text := renderInventory(hdr, stats, sc, *redact)
-		fmt.Print(text)
-		if outPath != "" {
-			if err := writeReport(outPath, []byte(text)); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(3)
-			}
-		}
-		return
-	}
-	screen := render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, *defang)
-	fmt.Print(screen)
-	if outPath != "" {
-		if err := writeReport(outPath, []byte(render(hdr, stats, findings, sc.warnings, sc.cov, sc.unread, floor, true))); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-	}
-	if jsonPath != "" {
-		if err := writeJSON(jsonPath, findings, sc, root); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-	}
-	os.Exit(exitCode(findings))
+	return skipped, nil
 }
 
 func parseSev(s string) (Severity, bool) {

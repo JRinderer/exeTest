@@ -14,6 +14,7 @@ import (
 var (
 	bodyfileRe = regexp.MustCompile(`(^|/)bodyfile([._-][^/]*)?$|(^|/)bodyfile/`)
 	uacHashRe  = regexp.MustCompile(`(^|/)hash_(executables|files)([._/-]|$)`)
+	cfgNameRe  = regexp.MustCompile(`/var/cron/tabs/|/etc/cron|/nsconfig/(nsafter\.sh|rc\.netscaler)$`)
 	sha256Re   = regexp.MustCompile(`(?i)(^|[^0-9a-f])([0-9a-f]{64})([^0-9a-f]|$)`)
 )
 
@@ -42,6 +43,14 @@ func (s *Scanner) bodyLine(local map[string]*agg, logical string, n int, line []
 		return
 	}
 	lp := strings.ToLower(name)
+	if mt > 0 && cfgNameRe.MatchString(lp) {
+		s.runMu.Lock()
+		if s.cfgMtime == nil {
+			s.cfgMtime = map[string]int64{}
+		}
+		s.cfgMtime[lp] = mt
+		s.runMu.Unlock()
+	}
 	for i := range pathRules {
 		p := &pathRules[i]
 		if p.Re.MatchString(lp) && (p.NotRe == nil || !p.NotRe.MatchString(lp)) {

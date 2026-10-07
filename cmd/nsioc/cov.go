@@ -41,6 +41,7 @@ var covSources = []covSource{
 	{"ps", "process listing (ps output)", never, false, false, nil, "payload processes, decoy process names"},
 	{"sockets", "socket listing (sockstat / netstat output)", never, false, false, nil, "implant listeners, connections to known attacker infrastructure"},
 	{"listings", "file listings (ls -l output)", never, false, false, nil, "setuid shell, dropped payload names"},
+	{"cronlog", "cron run log (var/log/cron)", `(^|/)log/cron([._-]|$)`, true, false, []string{"virtual/var/log/cron"}, "proof that a cron job actually ran (CMD lines), and when"},
 	{"web", "location: web folders (logon / gui / vpn)", `(^|/)(var/netscaler/(logon|gui)|netscaler/(ns_gui|portal)|var/vpn)/`, false, true, []string{"virtual/var/netscaler/logon/file"}, "webshell files and code, known file hashes"},
 	{"tmp", "location: /var/tmp and /tmp", `(^|/)(var/tmp|tmp)/`, false, true, []string{"virtual/var/tmp/file"}, "dropped payloads and implant folders, known file hashes"},
 	{"core", "location: core / crash files (/var/core)", `(^|/)var/(core|crash)/`, false, true, []string{"virtual/var/core/file"}, "CVE-2026-88772 / 88779 crash evidence"},

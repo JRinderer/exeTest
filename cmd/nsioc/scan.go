@@ -57,6 +57,13 @@ type Scanner struct {
 	cov       []covStat      // per covSources entry, guarded by mu
 	unread    []string       // compressed files in a format we cannot open, guarded by mu
 	inv       []invEntry     // every file scanned, guarded by mu
+
+	iocOn    bool // an -ioc-file was loaded
+	runMu    sync.Mutex
+	runN     int              // cron run lines that name an indicator
+	runSpan  covStat          // when they happened (syslog times have no year)
+	runUsers map[string]bool  // cron users on those lines
+	cfgMtime map[string]int64 // bodyfile: cron / startup file -> modification time
 }
 
 var sprayPrefixes = []string{"138.226.239.", "185.136.15.", "77.91.71."}

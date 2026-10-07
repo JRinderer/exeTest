@@ -49,7 +49,8 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 | `-workers N` | files scanned in parallel (default: CPU count) |
 | `-defang` | defang attacker text on screen too |
 | `-rules` | list rules, indicator counts and `-map` keys |
-| `-ioc-file FILE` | your own indicators, one per line (webhook host, URL or command string); kept out of the repo. `#` comments; `${IFS}` in an entry also matches `$IFS`, `%24%7BIFS%7D`, a space, `+`, `%20`; `re:<regex>` for a regex. Graded by where it is found: cron/startup/cron log or ns.log/messages/history = SUSPECT, any other file = CHECK |
+| `-ioc-file FILE` | your own indicators, one per line (webhook host, URL or command string); kept out of the repo. `#` comments; `${IFS}` in an entry also matches `$IFS`, `%24%7BIFS%7D`, a space, `+`, `%20`; `re:<regex>` for a regex. Graded by where it is found: cron/startup file = `cron-ioc-config` (configured), cron run log or cron lines in messages = `cron-ioc-ran` (executed), ns.log/messages/history = `ioc-log` (attempt), any other file = CHECK. A **CRON VERDICT** block then states whether a cron task is running the command (see below) |
+| `-each` | the folder holds many bundles (one subfolder, `.zip` or `.tar.gz` each): scan each on its own. `-out` becomes a **folder** (one report per bundle, default `nsioc_reports`) and `-csv FILE` gets the summary table (default `nsioc_each.csv`; bundles with a confirmed cron run first, then by severity; columns: cron state, run lines, config lines, log lines) |
 | `-v` | print each file as it is scanned |
 
 ## Reading the result
@@ -180,3 +181,20 @@ ipxref -min-bundles 5 -ignore known_good.txt /path/to/folder
 
 An address in many bundles can be an attacker or scanner hitting every appliance, but it can equally be shared
 infrastructure. It is a lead, not a verdict. IPv4 only.
+
+## Is a cron task running my command? (`-ioc-file`)
+
+With `-ioc-file`, the report ends with a **CRON VERDICT** that keeps three different facts apart:
+
+| Fact | Where it comes from | What it shows |
+|---|---|---|
+| Configured | crontab, `/etc/cron*`, `nsafter.sh`, `rc.netscaler` (`cron-ioc-config`); the file's modification time comes from the UAC bodyfile | a job names your indicator |
+| Executed | `var/log/cron`, or cron lines (`cron[pid]: (user) CMD`) in `messages` (`cron-ioc-ran`) | cron ran a command containing it; count, first / last time, user |
+| Attempted | `ns.log`, `messages`, shell history (`ioc-log`) and the pitboss injection rules | the string was sent to the appliance or typed |
+
+States: `CONFIRMED-RUNNING` (configured **and** executed), `CONFIGURED-NO-RUN-SEEN` (the cron log is there but holds no run),
+`CONFIGURED-NO-CRON-LOG` (no cron log collected: whether it ran cannot be told), `RUN-SEEN-NO-ENTRY`, `ATTEMPT-ONLY`, `NONE`.
+The block also prints how far back the cron log reaches, so "no run seen" can be read correctly. A cron line is only trusted
+when it starts like a syslog line written by cron, so text injected into another log cannot pass for a run.
+
+It does **not** show that the request reached the webhook or succeeded (that needs firewall, proxy or DNS logs), nor who created the entry.
