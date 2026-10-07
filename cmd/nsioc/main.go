@@ -39,6 +39,7 @@ func main() {
 		minSev   = flag.String("min", "check", "lowest severity to show: info, lead, check, targeted, suspect, compromise")
 		workers  = flag.Int("workers", runtime.NumCPU(), "files scanned in parallel")
 		listRule = flag.Bool("rules", false, "list the loaded rules and indicator counts, then exit")
+		iocFile  = flag.String("ioc-file", "", "file of your own indicators (one per line, # comments; ${IFS} also matches its disguises; re:<regex> for a regex)")
 		verbose  = flag.Bool("v", false, "print every file as it is scanned")
 		inv      = flag.Bool("inventory", false, "print what the bundle contains (structure only, no file contents) instead of findings; use it to check classification")
 		redact   = flag.Bool("redact", true, "with -inventory: mask IPs, long numbers and dates in paths so the output is safe to read out or share")
@@ -71,6 +72,14 @@ func main() {
 		covRe[i] = c
 	}
 	sc := NewScanner(*maxPer)
+	if *iocFile != "" {
+		n, err := sc.LoadIOCFile(*iocFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "-ioc-file:", err)
+			os.Exit(3)
+		}
+		fmt.Fprintf(os.Stderr, "loaded %d indicator(s) from %s\n", n, *iocFile)
+	}
 	if *listRule {
 		printRules(sc)
 		return

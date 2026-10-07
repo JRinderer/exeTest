@@ -49,6 +49,7 @@ Recommended order: run `-inventory` first and check that the sources you expect 
 | `-workers N` | files scanned in parallel (default: CPU count) |
 | `-defang` | defang attacker text on screen too |
 | `-rules` | list rules, indicator counts and `-map` keys |
+| `-ioc-file FILE` | your own indicators, one per line (webhook host, URL or command string); kept out of the repo. `#` comments; `${IFS}` in an entry also matches `$IFS`, `%24%7BIFS%7D`, a space, `+`, `%20`; `re:<regex>` for a regex. Graded by where it is found: cron/startup/cron log or ns.log/messages/history = SUSPECT, any other file = CHECK |
 | `-v` | print each file as it is scanned |
 
 ## Reading the result
